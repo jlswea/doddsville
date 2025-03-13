@@ -1,7 +1,7 @@
 create table idx (
 	id integer primary key asc,
-    name TEXT PRIMARY KEY,
-    url TEXT
+    name text,
+    url text
 );
 
 create table com (
@@ -9,7 +9,7 @@ create table com (
     isin text,
     name text,
     url text,
-    index integer,
-    foreign key (index) references idx(id) 
+    idx integer,
+    foreign key (idx) references idx(id) 
 );
 

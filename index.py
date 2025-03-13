@@ -8,63 +8,58 @@ from contextlib import closing
 from bs4 import BeautifulSoup as bs
 
 def main(argv):
-    logging.basicConfig(filename="log_index_ard.txt", level=logging.DEBUG)
+    logging.basicConfig(filename="index.log", level=logging.DEBUG)
 
-    # Reading indeces urls from database
     con = sqlite3.connect("data.db")
     cur = con.cursor()
-    indeces = cur.execute("SELECT name, link FROM indeces").fetchall()
 
-    for index in indeces:
-        logging.info(f"Scanning {index[0]} ...")
-        page = request(index[1])
-        table = get_tables(page)
-        companies = get_companies(table)
+    for idx in cur.execute("SELECT id, name, url FROM idx").fetchall():
+        logging.info(f"Scanning {idx[1]} ...")
+        page: BeautifulSoup = request(idx[2])
+        table_parts: [str] = get_multipart_table(page)
         
         # Inserting the data
-        for isin, value in companies.items():
+        for isin, value in get_elements(table_parts).items():
             with closing(con.cursor()) as c:
-                count = c.execute(f"SELECT COUNT(*) FROM companies WHERE isin='{isin}'").fetchone()[0]
+                count = c.execute(f"SELECT COUNT(*) FROM com WHERE isin='{isin}'").fetchone()[0]
                 # Isin already exists in database
                 if count == 1:
-                    duplicate = c.execute(f"SELECT * FROM companies WHERE isin='{isin}'").fetchone()
+                    dup = c.execute(f"SELECT * FROM com WHERE isin='{isin}'").fetchone()
                     # Check for companies that are included in multiple indeces
-                    if index[0] not in duplicate[3]:
-                        indeces = duplicate[3] + ", " + index[0]
-                        update = f"UPDATE companies SET index_id='{indeces}' WHERE isin='{isin}'"
-                        cur.execute(update)
+                    if idx[0] not in dup[4]:
+                        index_list = dup[4] + ", " + idx[0]
+                        cur.execute(f"UPDATE com SET idx='{index_list}' WHERE isin='{isin}'")
                         con.commit()
-                        logging.info(f"Add index {index[0]} to {duplicate[1]}")
+                        logging.info(f"Add index {idx[1]} to {dup[2]}")
                     # Check for updated name
-                    if value[0] != duplicate[1]:
-                        update = f"UPDATE companies SET name='{value[0]}' WHERE isin='{isin}'"
+                    if value[0] != dup[2]:
+                        update = f"UPDATE com SET name='{value[0]}' WHERE isin='{isin}'"
                         cur.execute(update)
                         con.commit()
                         logging.info(
                             f"Name updated for isin {isin}: "
-                            f"{duplicate[1]} --> {value[0]}"
+                            f"{dup[2]} --> {value[0]}"
                         )
-                    # Check for updated link
-                    if value[1] != duplicate[2]:
-                        update = f"UPDATE companies SET link='{value[0]}' WHERE isin='{isin}'"
+                    # Check for updated url
+                    if value[1] != dup[3]:
+                        update = f"UPDATE com SET url='{value[1]}' WHERE isin='{isin}'"
                         cur.execute(update)
                         con.commit()
                         logging.info(
                             f"URL updated for isin {isin}: "
-                            f"{duplicate[2]} --> {value[1]}"
+                            f"{dup[3]} --> {value[1]}"
                         )
                 elif count == 0:
-                    insert = f"INSERT INTO companies VALUES ('{isin}', '{value[0]}', '{value[1]}', '{index[0]}')"
+                    insert = f"INSERT INTO com(isin, name, url, idx) VALUES ('{isin}', '{value[0]}', '{value[1]}', '{idx[0]}')"
                     cur.execute(insert)
                     con.commit()
-                else:
-                    logging.warning(f"Isin {isin} has a count of {count} in table companies")
+                    logging.info(f"Add '{value[0]}'")
     
     cur.close()
     con.close()
 
 
-def get_tables(soup):
+def get_multipart_table(soup):
     """
     Checks for multipage content in soup. Returns a list of all 
     associated URL's as a BS soup object
@@ -107,8 +102,7 @@ def get_tables(soup):
 
 def request(url, data=None):
     """
-    Requests a url of domain kurse.boerse.ard.de and returns its
-    relevant content
+    Sends HTTP request
     """
 
     user_agent = """Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_3) 
@@ -127,7 +121,7 @@ def request(url, data=None):
         if hasattr(e, "reason"):
             print("unable to serve request: ", e.reason)
         if hasattr(e, "code"):
-            print("Error code: ", e.code)
+            print("error code: ", e.code)
             
     # server responded as expected; save and close response
     else:
@@ -138,38 +132,34 @@ def request(url, data=None):
     return soup
     
 
-def parse_table(table):
+def parse(table):
     """
-    Gets all companies from an html table and returns their name
-    and link to their financial information on boerse.ard.de
+    Reads com entity from given html table
     """
-    # Exclude table header
-    trs = table.find_all("tr")[1:]
+
+    trs = table.find_all("tr")[1:] # Exclude table header
     
-    company_dict = dict()
+    res = dict()
     for tr in trs:
         tds = tr.findAll("td")
-        name = str(tds[0].string)
         isin = tds[7].string
-        link = str(tr.get("onclick"))
-        link_clean = link.split("'")[1].split("'")[0]
-        company_dict[isin] = [name, link_clean]
+        name = str(tds[0].string)
+        url = str(tr.get("onclick")).split("'")[1].split("'")[0]
+        res[isin] = [name, url]
         
-    return(company_dict)
+    return res
 
 
-def get_companies(tables):
+def get_elements(parts):
     """
-    Gets all companies from a list of html tables and returns their name
-    and link to their financial information on boerse.ard.de
+    Parses all elements from a list of html tables
     """
 
-    company_dict = dict()
-    for t in tables:
-        next_dict = parse_table(t)
-        company_dict.update(next_dict)
+    res = dict()
+    for p in parts:
+        res.update(parse(p))
         
-    return(company_dict)
+    return res
 
     
 if __name__ == "__main__":

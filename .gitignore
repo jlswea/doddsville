@@ -1,5 +1,5 @@
 __pycache__/
 .vscode
 .DS_Store
-log_index_ard.txt
+*.log
 *.db
