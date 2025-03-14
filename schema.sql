@@ -8,8 +8,6 @@ create table com (
 	id integer primary key asc,
     isin text,
     name text,
-    url text,
-    idx integer,
-    foreign key (idx) references idx(id) 
+    url text
 );
 

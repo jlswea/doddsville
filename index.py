@@ -7,6 +7,9 @@ from contextlib import closing
 
 from bs4 import BeautifulSoup as bs
 
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.StreamHandler()) 
+
 def main(argv):
     logging.basicConfig(filename="index.log", level=logging.DEBUG)
 
@@ -14,7 +17,7 @@ def main(argv):
     cur = con.cursor()
 
     for idx in cur.execute("SELECT id, name, url FROM idx").fetchall():
-        logging.info(f"Scanning {idx[1]} ...")
+        logger.info(f"Scanning {idx[1]} ...")
         page: BeautifulSoup = request(idx[2])
         table_parts: [str] = get_multipart_table(page)
         
@@ -25,18 +28,12 @@ def main(argv):
                 # Isin already exists in database
                 if count == 1:
                     dup = c.execute(f"SELECT * FROM com WHERE isin='{isin}'").fetchone()
-                    # Check for companies that are included in multiple indeces
-                    if idx[0] not in dup[4]:
-                        index_list = dup[4] + ", " + idx[0]
-                        cur.execute(f"UPDATE com SET idx='{index_list}' WHERE isin='{isin}'")
-                        con.commit()
-                        logging.info(f"Add index {idx[1]} to {dup[2]}")
                     # Check for updated name
                     if value[0] != dup[2]:
                         update = f"UPDATE com SET name='{value[0]}' WHERE isin='{isin}'"
                         cur.execute(update)
                         con.commit()
-                        logging.info(
+                        logger.info(
                             f"Name updated for isin {isin}: "
                             f"{dup[2]} --> {value[0]}"
                         )
@@ -45,16 +42,15 @@ def main(argv):
                         update = f"UPDATE com SET url='{value[1]}' WHERE isin='{isin}'"
                         cur.execute(update)
                         con.commit()
-                        logging.info(
+                        logger.info(
                             f"URL updated for isin {isin}: "
                             f"{dup[3]} --> {value[1]}"
                         )
                 elif count == 0:
-                    insert = f"INSERT INTO com(isin, name, url, idx) VALUES ('{isin}', '{value[0]}', '{value[1]}', '{idx[0]}')"
+                    logger.info(f"Add '{value[0]}'")
+                    insert = f"""INSERT INTO com(isin, name, url) VALUES ('{isin}', '{value[0].replace("'", "''")}', '{value[1]}')"""
                     cur.execute(insert)
                     con.commit()
-                    logging.info(f"Add '{value[0]}'")
-    
     cur.close()
     con.close()
 
