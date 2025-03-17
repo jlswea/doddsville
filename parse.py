@@ -1,38 +1,47 @@
 import sys
 import sqlite3
+import time
+import logging
 from contextlib import closing
+from datetime import datetime, timezone
 
-import pandas as pd
+from index import request
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.StreamHandler()) 
 
 
-def scrape_all(argv):
-    #logging.basicConfig(filename="log_parse_ard.txt", level=logging.DEBUG)
+def sense_all(argv):
+    logging.basicConfig(filename="parse.log", level=logging.DEBUG)
 
     '''
     Reading all companies urls from database.
-    Call the scrape_one() on each url.
     '''
     con = sqlite3.connect("data.db")
     with closing(con.cursor()) as c:
-        # No DISTINCT needed since isin is checked for duplicates
-        # while scanning in index_ard.py
-        c.execute("SELECT isin, link FROM companies")
-        for row in c:
-            # TODO: Time this function and wait for some time to not DoS accidentally 
-            scrape_one(row[0], row[1])
+        coms = c.execute("SELECT id, name, url FROM com").fetchall()
+        for com in coms:
+            now = datetime.now(timezone.utc)
+            logger.info(f"Scanning {com[1]} at {now}")
+
+            html = request(com[2]).find("div", class_="VWDcomp WE032")
+            
+            if html is None:
+                logger.info("No data found")
+            else:
+                logger.info("Save data")
+                c.execute(f"insert into raw ( com, html, timestamp ) values ('{com[0]}', '{str(html)}', '{now}')")
+                con.commit()
+
+            time.sleep(1)
 
 
-def scrape_one(isin, link):
+def sense(id, name, url, cursor):
     """
-    Scrape fundamental data for the provided isin, link pair.
-    Store this data in the fundamentals table in data.db.
+    Store raw html in the database.
     """
-    nan = ["-"]
-    dfs = pd.read_html(link, match = "Gewinn und Verlustrechnung", header=0, thousands=".", decimal=",", na_values=nan)
 
-    print(dfs[0])
-    return
-
+    
     # for df in dfs:
     #     name = df.columns[0]
     #     df.set_index(name, inplace=True)
@@ -68,6 +77,5 @@ def print_calc(data):
 
 
 if __name__ == "__main__":
-    #scrape_all(sys.argv[1:])
-    scrape_one("US98980G1022", r"https://www.tagesschau.de/wirtschaft/boersenkurse/us98980g1022-65162748/")
+    sense_all(sys.argv[1:])
 

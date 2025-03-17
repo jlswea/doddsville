@@ -11,3 +11,11 @@ create table com (
     url text
 );
 
+create table raw (
+    id integer primary key asc,
+    com integer,
+    html text,
+    timestamp text, 
+    foreign key (com) references com on delete cascade
+);
+
