@@ -8,7 +8,8 @@ from contextlib import closing
 from bs4 import BeautifulSoup as bs
 
 logger = logging.getLogger(__name__)
-logger.addHandler(logging.StreamHandler()) 
+logger.addHandler(logging.StreamHandler())
+
 
 def main(argv):
     logging.basicConfig(filename="index.log", level=logging.DEBUG)
@@ -20,11 +21,13 @@ def main(argv):
         logger.info(f"Scanning {idx[1]} ...")
         page: BeautifulSoup = request(idx[2])
         table_parts: [str] = get_multipart_table(page)
-        
+
         # Inserting the data
         for isin, value in get_elements(table_parts).items():
             with closing(con.cursor()) as c:
-                count = c.execute(f"SELECT COUNT(*) FROM com WHERE isin='{isin}'").fetchone()[0]
+                count = c.execute(
+                    f"SELECT COUNT(*) FROM com WHERE isin='{isin}'"
+                ).fetchone()[0]
                 # Isin already exists in database
                 if count == 1:
                     dup = c.execute(f"SELECT * FROM com WHERE isin='{isin}'").fetchone()
@@ -34,8 +37,7 @@ def main(argv):
                         cur.execute(update)
                         con.commit()
                         logger.info(
-                            f"Name updated for isin {isin}: "
-                            f"{dup[2]} --> {value[0]}"
+                            f"Name updated for isin {isin}: {dup[2]} --> {value[0]}"
                         )
                     # Check for updated url
                     if value[1] != dup[3]:
@@ -43,8 +45,7 @@ def main(argv):
                         cur.execute(update)
                         con.commit()
                         logger.info(
-                            f"URL updated for isin {isin}: "
-                            f"{dup[3]} --> {value[1]}"
+                            f"URL updated for isin {isin}: {dup[3]} --> {value[1]}"
                         )
                 elif count == 0:
                     logger.info(f"Add '{value[0]}'")
@@ -57,9 +58,9 @@ def main(argv):
 
 def get_multipart_table(soup):
     """
-    Checks for multipage content in soup. Returns a list of all 
+    Checks for multipage content in soup. Returns a list of all
     associated URL's as a BS soup object
-    """ 
+    """
     content_list = [soup.find("div", id="USFzusammensetzung")]
     pagination = content_list[0].find("div", class_="pagination")
 
@@ -76,19 +77,19 @@ def get_multipart_table(soup):
 
         # Split off offset parameter
         last_equal = par.rfind("=")
-        no_offset_par = par[:last_equal+1]
+        no_offset_par = par[: last_equal + 1]
 
         while True:
             # Compute offset
             offset += 1
             par = no_offset_par + str(offset * 50)
-            
+
             # Make the request
             url = rootDir + filename
             data = par
             extra_soup = request(url, data)
             content_list.append(extra_soup)
-            
+
             # Cancellation condition
             if extra_soup.find("li", class_="next disabled"):
                 break
@@ -108,9 +109,9 @@ def request(url, data=None):
     if data:
         header["X-Requested-With"] = "XMLHttpRequest"
         url = url + "?" + data
-        
-    req = urllib.request.Request(url = url, headers = header)
-    
+
+    req = urllib.request.Request(url=url, headers=header)
+
     try:
         response = urllib.request.urlopen(req)
     except URLError as e:
@@ -118,23 +119,23 @@ def request(url, data=None):
             print("unable to serve request: ", e.reason)
         if hasattr(e, "code"):
             print("error code: ", e.code)
-            
+
     # server responded as expected; save and close response
     else:
         page = response.read()
         response.close()
-        
+
     soup = bs(page, "lxml")
     return soup
-    
+
 
 def parse(table):
     """
     Reads com entity from given html table
     """
 
-    trs = table.find_all("tr")[1:] # Exclude table header
-    
+    trs = table.find_all("tr")[1:]  # Exclude table header
+
     res = dict()
     for tr in trs:
         tds = tr.findAll("td")
@@ -142,7 +143,7 @@ def parse(table):
         name = str(tds[0].string)
         url = str(tr.get("onclick")).split("'")[1].split("'")[0]
         res[isin] = [name, url]
-        
+
     return res
 
 
@@ -154,15 +155,9 @@ def get_elements(parts):
     res = dict()
     for p in parts:
         res.update(parse(p))
-        
+
     return res
 
-    
+
 if __name__ == "__main__":
     main(sys.argv[1:])
-
-
-
-
-
-
