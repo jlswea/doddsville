@@ -19,3 +19,15 @@ create table raw (
     foreign key (com) references com on delete cascade
 );
 
+create table trans (
+	id integer primary key asc,
+	com integer,
+	type text,
+	amount integer,
+	date date,
+	price integer, -- price per share in euro cents
+	cost integer, -- costs (fees, tax, etc.) in euro cents
+	foreign key (com) references com on delete cascade,
+	check (type in ('buy', 'sell'))
+);
+
