@@ -53,7 +53,7 @@ def main() -> None:
         help="Transaction date (YYYY-MM-DD)",
     )
     parser_buy.add_argument(
-        "--fees", type=float, default=0.0, help="Any commission or fees paid"
+        "--cost", type=float, default=0.0, help="Any commission or fees paid"
     )
     parser_buy.add_argument(
         "--transaction",
@@ -138,7 +138,7 @@ def main() -> None:
                     print(f"{BOLD}{GREEN}{i+1}{RESET}:: Name: {com[2]}, Isin: {com[1]}, ID: {com[0]}")
 
                 # Let the user select the correct option
-                option_input = input("Which option should be added?")
+                option_input = input("Which option should be added? ")
                 try:
                     option = int(option_input)
                     selected_company = res[option- 1]
@@ -153,7 +153,20 @@ def main() -> None:
             print(f"  Quantity: {args.quantity}")
             print(f"  Price:    ${args.price:.2f}")
             print(f"  Date:     {args.date}")
-            print(f"  Fees:     ${args.fees:.2f}")
+            print(f"  Cost:    ${args.cost:.2f}")
+
+            continue_input = input("Commit? y/Y ")
+            if continue_input.lower() == "y":
+                try:
+                    cur.execute(
+                        f"insert into trans ( com, type, amount, date, price, cost ) values ('{selected_company[2]}', 'buy', '{args.quantity}', '{args.date}', '{args.price}', '{args.cost}' )"
+                    )
+                except sqlite3.Error as e:
+                    print(f"Error inserting data: {e}")
+                    conn.close()
+
+                conn.commit()
+
 
 
         elif args.transaction_type == "sell":
