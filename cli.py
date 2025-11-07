@@ -11,6 +11,35 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
 
+def cents_from_decimal_string(value):
+    """
+    Custom type for argparse that converts a string with exactly two decimal
+    places (e.g., '12.34') into an integer representing cents (1234).
+    It bypasses float conversion to avoid precision issues.
+    """
+    if not isinstance(value, str):
+        raise argparse.ArgumentTypeError(f"'{value}' is not a string.")
+
+    # Check for decimal point and format
+    if '.' not in value:
+        raise argparse.ArgumentTypeError(f"'{value}' must have exactly two decimal places (e.g., '12.34').")
+
+    integer_part, decimal_part = value.split('.')
+
+    if len(decimal_part) != 2:
+        raise argparse.ArgumentTypeError(f"'{value}' must have exactly two decimal places.")
+
+    # Reconstruct the string without the decimal point
+    cents_string = integer_part + decimal_part
+
+    # Convert to integer
+    try:
+        return int(cents_string)
+    except ValueError:
+        # This catch is mostly for safety, as the split should ensure numeric parts
+        raise argparse.ArgumentTypeError(f"'{value}' contains non-numeric characters that prevent conversion to cents.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="dv: Managing common stocks transactions"
@@ -46,14 +75,14 @@ def main() -> None:
     )
     parser_buy.add_argument("name", type=str, help="Stock name")
     parser_buy.add_argument("quantity", type=int, help="Number of shares bought")
-    parser_buy.add_argument("price", type=float, help="Price per share")
+    parser_buy.add_argument("price", type=cents_from_decimal_string, help="Price per share")
     parser_buy.add_argument(
         "--date",
         default=datetime.now().strftime("%Y-%m-%d"),
         help="Transaction date (YYYY-MM-DD)",
     )
     parser_buy.add_argument(
-        "--cost", type=float, default=0.0, help="Any commission or fees paid"
+        "--cost", type=cents_from_decimal_string, default=0, help="Any commission or fees paid"
     )
     parser_buy.add_argument(
         "--transaction",
@@ -151,9 +180,9 @@ def main() -> None:
             print("Recording a BUY transaction:")
             print(f"  Name:     {selected_company[2]}")
             print(f"  Quantity: {args.quantity}")
-            print(f"  Price:    ${args.price:.2f}")
+            print(f"  Price:    €{(args.price / 100):.2f}")
             print(f"  Date:     {args.date}")
-            print(f"  Cost:    ${args.cost:.2f}")
+            print(f"  Cost:     €{(args.cost / 100):.2f}")
 
             continue_input = input("Commit? y/Y ")
             if continue_input.lower() == "y":
