@@ -16,7 +16,7 @@ create table raw (
     com integer,
     html text,
     timestamp text, 
-    foreign key (com) references com on delete cascade
+    foreign key (com) references com (id) on delete cascade
 );
 
 create table trans (
@@ -27,7 +27,7 @@ create table trans (
 	date date,
 	price integer, -- price per share in euro cents
 	cost integer, -- costs (fees, tax, etc.) in euro cents
-	foreign key (com) references com on delete cascade,
+	foreign key (com) references com (id) on delete cascade,
 	check (type in ('buy', 'sell'))
 );
 

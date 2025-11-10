@@ -1,4 +1,5 @@
 import argparse
+from multiprocessing.sharedctypes import Value
 import sqlite3
 from datetime import datetime
 
@@ -11,6 +12,7 @@ GREEN = "\033[32m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
 
+
 def cents_from_decimal_string(value):
     """
     Custom type for argparse that converts a string with exactly two decimal
@@ -21,13 +23,17 @@ def cents_from_decimal_string(value):
         raise argparse.ArgumentTypeError(f"'{value}' is not a string.")
 
     # Check for decimal point and format
-    if '.' not in value:
-        raise argparse.ArgumentTypeError(f"'{value}' must have exactly two decimal places (e.g., '12.34').")
+    if "." not in value:
+        raise argparse.ArgumentTypeError(
+            f"'{value}' must have exactly two decimal places (e.g., '12.34')."
+        )
 
-    integer_part, decimal_part = value.split('.')
+    integer_part, decimal_part = value.split(".")
 
     if len(decimal_part) != 2:
-        raise argparse.ArgumentTypeError(f"'{value}' must have exactly two decimal places.")
+        raise argparse.ArgumentTypeError(
+            f"'{value}' must have exactly two decimal places."
+        )
 
     # Reconstruct the string without the decimal point
     cents_string = integer_part + decimal_part
@@ -37,7 +43,24 @@ def cents_from_decimal_string(value):
         return int(cents_string)
     except ValueError:
         # This catch is mostly for safety, as the split should ensure numeric parts
-        raise argparse.ArgumentTypeError(f"'{value}' contains non-numeric characters that prevent conversion to cents.")
+        raise argparse.ArgumentTypeError(
+            f"'{value}' contains non-numeric characters that prevent conversion to cents."
+        )
+
+
+def validate_date_format(date_string):
+    """
+    Custom type function for argparse to validate and parse date strings.
+    Raises ValueError if the format doesn't match DD.MM.YYYY.
+    """
+    try:
+        # Attempt to parse the date string using the expected format
+        date_object = datetime.strptime(date_string, "%d.%m.%Y")
+        return date_object
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"Invalid date format: '{date_string}'. Expected DD.MM.YYYY."
+        )
 
 
 def main() -> None:
@@ -75,20 +98,20 @@ def main() -> None:
     )
     parser_buy.add_argument("name", type=str, help="Stock name")
     parser_buy.add_argument("quantity", type=int, help="Number of shares bought")
-    parser_buy.add_argument("price", type=cents_from_decimal_string, help="Price per share")
+    parser_buy.add_argument(
+        "price", type=cents_from_decimal_string, help="Price per share"
+    )
     parser_buy.add_argument(
         "--date",
+        type=validate_date_format,
         default=datetime.now().strftime("%Y-%m-%d"),
         help="Transaction date (YYYY-MM-DD)",
     )
     parser_buy.add_argument(
-        "--cost", type=cents_from_decimal_string, default=0, help="Any commission or fees paid"
-    )
-    parser_buy.add_argument(
-        "--transaction",
-        "-t",
-        type=str,
-        help="A buy transaction of format: {DATETIME} {SYMBOL} {NUMBER_OF_SHARES} {PRICE_PER_SHARE}",
+        "--cost",
+        type=cents_from_decimal_string,
+        default=0,
+        help="Any commission or fees paid",
     )
 
     # --- "add sell" sub-command ---
@@ -97,20 +120,20 @@ def main() -> None:
         "name", type=str, help="Stock name; Has to be unique in portfolio table"
     )
     parser_sell.add_argument("quantity", type=float, help="Number of shares sold")
-    parser_sell.add_argument("price", type=float, help="Price per share")
+    parser_sell.add_argument(
+        "price", type=cents_from_decimal_string, help="Price per share"
+    )
     parser_sell.add_argument(
         "--date",
+        type=validate_date_format,
         default=datetime.now().strftime("%Y-%m-%d"),
         help="Transaction date (YYYY-MM-DD)",
     )
     parser_sell.add_argument(
-        "--fees", type=float, default=0.0, help="Any commission or fees paid"
-    )
-    parser_sell.add_argument(
-        "--transaction",
-        "-t",
-        type=str,
-        help="A sell transaction of format: {DATETIME} {SYMBOL} {NUMBER_OF_SHARES} {PRICE_PER_SHARE}",
+        "--cost",
+        type=cents_from_decimal_string,
+        default=0,
+        help="Any commission or fees paid",
     )
 
     # --- "add div" (dividend) sub-command ---
@@ -146,36 +169,42 @@ def main() -> None:
         help="The installed version of the doddsville CLI",
     )
 
+
+    # --------------------------------------------------------------------------
+    #                           Parse args
+    # -------------------------------------------------------------------------- 
     args = parser.parse_args()
+
+    conn = sqlite3.connect("data.db")
+    cur = conn.cursor()
+    cur.execute("PRAGMA foreign_keys = ON;")
 
     if args.command == "list":
         print("Listing all transactions...")
 
     elif args.command == "add":
-        # The add command was invoked, we will need a DB connection
-        conn = sqlite3.connect("data.db")
-        cur = conn.cursor()
-
         if args.transaction_type == "buy":
-            
-            cur.execute("select * from com where name like ?", (f"%{args.name}%",))
+            cur.execute("select id,isin,name from com where name like ?", (f"%{args.name}%",))
             res = cur.fetchall()
             selected_company = res[0]
             if len(res) > 1:
                 print(f"There are multiple options for name {args.name}:")
                 for i, com in enumerate(res):
-                    print(f"{BOLD}{GREEN}{i+1}{RESET}:: Name: {com[2]}, Isin: {com[1]}, ID: {com[0]}")
+                    print(
+                        f"{BOLD}{GREEN}{i + 1}{RESET}:: Name: {com[2]}, Isin: {com[1]}, ID: {com[0]}"
+                    )
 
                 # Let the user select the correct option
                 option_input = input("Which option should be added? ")
                 try:
                     option = int(option_input)
-                    selected_company = res[option- 1]
+                    selected_company = res[option - 1]
                 except ValueError:
                     print("Invalid input: Please enter a number.")
                 except IndexError:
-                    print(f"Invalid option: Please select a number between 1 and {len(res)}.")
-
+                    print(
+                        f"Invalid option: Please select a number between 1 and {len(res)}."
+                    )
 
             print("Recording a BUY transaction:")
             print(f"  Name:     {selected_company[2]}")
@@ -195,8 +224,6 @@ def main() -> None:
                     conn.close()
 
                 conn.commit()
-
-
 
         elif args.transaction_type == "sell":
             print("Recording a SELL transaction:")
