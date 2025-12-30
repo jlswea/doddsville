@@ -1,0 +1,16 @@
+[package]
+name = "doddsville_tui"
+version = "0.1.0"
+edition = "2021"
+description = "Doddsville Stock Portfolio Manager - Rust/Ratatui TUI"
+
+[dependencies]
+ratatui = "0.29"
+crossterm = "0.28"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
+anyhow = "1.0"
+
+[[bin]]
+name = "dv"
+path = "src/main.rs"
