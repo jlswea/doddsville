@@ -38,7 +38,7 @@ class TransactionModal(ModalScreen[dict | None]):
     }
 
     #modal-container {
-        width: 60;
+        width: 70;
         height: auto;
         border: thick $primary;
         background: $surface;
@@ -66,6 +66,32 @@ class TransactionModal(ModalScreen[dict | None]):
         width: 1fr;
     }
 
+    #stock-suggestions {
+        height: auto;
+        max-height: 8;
+        background: $surface-darken-1;
+        border: solid $primary-darken-1;
+        margin-left: 12;
+        display: none;
+    }
+
+    #stock-suggestions.visible {
+        display: block;
+    }
+
+    .suggestion-item {
+        padding: 0 1;
+        height: 1;
+    }
+
+    .suggestion-item:hover {
+        background: $primary;
+    }
+
+    .suggestion-item.selected {
+        background: $primary;
+    }
+
     #button-row {
         margin-top: 1;
         align: center middle;
@@ -76,9 +102,15 @@ class TransactionModal(ModalScreen[dict | None]):
     }
     """
 
-    def __init__(self, transaction_type: str = "buy"):
+    def __init__(self, transaction_type: str = "buy", db_path: str = "data.db"):
         super().__init__()
         self.transaction_type = transaction_type
+        self.db_path = db_path
+        self.selected_company_id: int | None = None
+        self.selected_company_name: str = ""
+        self.suggestions: list[tuple[int, str, str]] = []
+        self.suggestion_index: int = 0
+        self._ignore_input_change: bool = False
 
     def compose(self) -> ComposeResult:
         with Container(id="modal-container"):
@@ -86,7 +118,9 @@ class TransactionModal(ModalScreen[dict | None]):
 
             with Horizontal(classes="form-row"):
                 yield Label("Stock:", classes="form-label")
-                yield Input(placeholder="Search stock name...", id="stock-input", classes="form-input")
+                yield Input(placeholder="Type to search...", id="stock-input", classes="form-input")
+
+            yield Static(id="stock-suggestions")
 
             with Horizontal(classes="form-row"):
                 yield Label("Quantity:", classes="form-label")
@@ -108,13 +142,98 @@ class TransactionModal(ModalScreen[dict | None]):
                 yield Button("Cancel", variant="default", id="cancel-btn")
                 yield Button("Add", variant="primary", id="add-btn")
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "stock-input":
+            if self._ignore_input_change:
+                self._ignore_input_change = False
+                return
+            self.selected_company_id = None
+            self.selected_company_name = ""
+            if len(event.value) >= 2:
+                self._search_stocks(event.value)
+            else:
+                self._hide_suggestions()
+
+    def _search_stocks(self, query: str) -> None:
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.cursor()
+            # Fuzzy search: match anywhere in name, case insensitive
+            cur.execute(
+                "SELECT id, isin, name FROM com WHERE name LIKE ? ORDER BY name LIMIT 8",
+                (f"%{query}%",)
+            )
+            self.suggestions = cur.fetchall()
+            conn.close()
+            self.suggestion_index = 0
+            self._show_suggestions()
+        except sqlite3.Error:
+            self._hide_suggestions()
+
+    def _show_suggestions(self) -> None:
+        suggestions_widget = self.query_one("#stock-suggestions", Static)
+        if not self.suggestions:
+            self._hide_suggestions()
+            return
+
+        lines = []
+        for i, (company_id, isin, name) in enumerate(self.suggestions):
+            prefix = "► " if i == self.suggestion_index else "  "
+            display_name = name[:50] if len(name) > 50 else name
+            lines.append(f"{prefix}{display_name} ({isin})")
+
+        suggestions_widget.update("\n".join(lines))
+        suggestions_widget.add_class("visible")
+
+    def _hide_suggestions(self) -> None:
+        self.suggestions = []
+        suggestions_widget = self.query_one("#stock-suggestions", Static)
+        suggestions_widget.update("")
+        suggestions_widget.remove_class("visible")
+
+    def _select_suggestion(self) -> None:
+        if self.suggestions and 0 <= self.suggestion_index < len(self.suggestions):
+            company_id, isin, name = self.suggestions[self.suggestion_index]
+            self.selected_company_id = company_id
+            self.selected_company_name = name
+            self._ignore_input_change = True
+            stock_input = self.query_one("#stock-input", Input)
+            stock_input.value = name
+            self._hide_suggestions()
+            # Move focus to next field
+            self.query_one("#quantity-input", Input).focus()
+
+    def on_key(self, event) -> None:
+        if self.suggestions:
+            if event.key == "down":
+                self.suggestion_index = min(self.suggestion_index + 1, len(self.suggestions) - 1)
+                self._show_suggestions()
+                event.prevent_default()
+            elif event.key == "up":
+                self.suggestion_index = max(self.suggestion_index - 1, 0)
+                self._show_suggestions()
+                event.prevent_default()
+            elif event.key == "enter":
+                stock_input = self.query_one("#stock-input", Input)
+                if stock_input.has_focus:
+                    self._select_suggestion()
+                    event.prevent_default()
+            elif event.key == "tab":
+                if self.query_one("#stock-input", Input).has_focus and self.suggestions:
+                    self._select_suggestion()
+                    event.prevent_default()
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "cancel-btn":
             self.dismiss(None)
         elif event.button.id == "add-btn":
+            if not self.selected_company_id:
+                self.notify("Please select a stock from the suggestions", severity="warning")
+                return
             self.dismiss({
                 "type": self.transaction_type,
-                "stock": self.query_one("#stock-input", Input).value,
+                "company_id": self.selected_company_id,
+                "stock": self.selected_company_name,
                 "quantity": self.query_one("#quantity-input", Input).value,
                 "price": self.query_one("#price-input", Input).value,
                 "date": self.query_one("#date-input", Input).value,
@@ -186,7 +305,7 @@ class StockSearchModal(ModalScreen[tuple | None]):
             conn = sqlite3.connect(self.db_path)
             cur = conn.cursor()
             cur.execute(
-                "SELECT id, isin, name FROM company WHERE name LIKE ? LIMIT 20",
+                "SELECT id, isin, name FROM com WHERE name LIKE ? LIMIT 20",
                 (f"%{query}%",)
             )
             results = cur.fetchall()
@@ -304,39 +423,21 @@ class DoddsTUI(App):
             conn = sqlite3.connect(self.db_path)
             cur = conn.cursor()
 
-            # Try the new schema first, fall back to old
-            try:
-                cur.execute("""
-                    SELECT
-                        t.id,
-                        t.date,
-                        t.type,
-                        COALESCE(c.name, '-'),
-                        COALESCE(t.quantity, 0),
-                        COALESCE(t.unit_value, 0),
-                        COALESCE(t.total_value, 0),
-                        COALESCE(t.cost, 0)
-                    FROM "transaction" t
-                    LEFT JOIN company c ON t.company = c.id
-                    ORDER BY t.date DESC
-                    LIMIT 100
-                """)
-            except sqlite3.Error:
-                # Fall back to trans table if exists
-                cur.execute("""
-                    SELECT
-                        id,
-                        date,
-                        type,
-                        com,
-                        amount,
-                        price,
-                        (amount * price),
-                        cost
-                    FROM trans
-                    ORDER BY date DESC
-                    LIMIT 100
-                """)
+            cur.execute("""
+                SELECT
+                    t.id,
+                    t.date,
+                    t.type,
+                    COALESCE(c.name, '-'),
+                    t.amount,
+                    t.price,
+                    (t.amount * t.price),
+                    t.cost
+                FROM trans t
+                LEFT JOIN com c ON t.com = c.id
+                ORDER BY t.date DESC
+                LIMIT 100
+            """)
 
             rows = cur.fetchall()
             conn.close()
@@ -377,13 +478,13 @@ class DoddsTUI(App):
         return colors.get(tx_type, tx_type)
 
     def action_add_buy(self) -> None:
-        self.push_screen(TransactionModal("buy"), self._handle_transaction)
+        self.push_screen(TransactionModal("buy", self.db_path), self._handle_transaction)
 
     def action_add_sell(self) -> None:
-        self.push_screen(TransactionModal("sell"), self._handle_transaction)
+        self.push_screen(TransactionModal("sell", self.db_path), self._handle_transaction)
 
     def action_add_dividend(self) -> None:
-        self.push_screen(TransactionModal("dividend"), self._handle_transaction)
+        self.push_screen(TransactionModal("dividend", self.db_path), self._handle_transaction)
 
     def action_search(self) -> None:
         self.push_screen(StockSearchModal(self.db_path))
@@ -396,11 +497,38 @@ class DoddsTUI(App):
         if result is None:
             return
 
-        # Here you would insert into the database
-        self.notify(
-            f"Added {result['type']}: {result['quantity']} x {result['stock']} @ {result['price']}",
-            severity="information"
-        )
+        try:
+            # Parse values
+            quantity = int(result['quantity'])
+            price_cents = int(float(result['price']) * 100)
+            cost_cents = int(float(result['cost']) * 100)
+
+            # Parse date (DD.MM.YYYY -> YYYY-MM-DD)
+            date_parts = result['date'].split('.')
+            if len(date_parts) == 3:
+                date_str = f"{date_parts[2]}-{date_parts[1]}-{date_parts[0]}"
+            else:
+                date_str = result['date']
+
+            conn = sqlite3.connect(self.db_path)
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO trans (com, type, amount, date, price, cost)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (result['company_id'], result['type'], quantity, date_str, price_cents, cost_cents)
+            )
+            conn.commit()
+            conn.close()
+
+            self.notify(
+                f"Added {result['type']}: {quantity} x {result['stock']} @ {result['price']}",
+                severity="information"
+            )
+        except (ValueError, KeyError) as e:
+            self.notify(f"Invalid input: {e}", severity="error")
+        except sqlite3.Error as e:
+            self.notify(f"Database error: {e}", severity="error")
+
         self._load_transactions()
 
 
