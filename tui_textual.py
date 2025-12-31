@@ -128,7 +128,7 @@ class TransactionModal(ModalScreen[dict | None]):
 
             with Horizontal(classes="form-row"):
                 yield Label("Price:", classes="form-label")
-                yield Input(placeholder="12.34", id="price-input", classes="form-input")
+                yield Input(placeholder="12.34", id="price-input", classes="form-input", validators=[Number()], validate_on=["blur"])
 
             with Horizontal(classes="form-row"):
                 yield Label("Date:", classes="form-label")
