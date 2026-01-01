@@ -32,7 +32,11 @@ python index.py
 
 ## Database Schema
 
-The future database layout is documented in [`docs/database_diagram.d2`](docs/database_diagram.d2). This D2 diagram shows the planned schema with the following tables:
+The future database layout:
+
+![Database Schema](docs/database_diagram.svg)
+
+The planned schema contains the following tables:
 
 - **accounts** - Financial accounts
 - **transaction_categories** - Categories for classifying transactions
