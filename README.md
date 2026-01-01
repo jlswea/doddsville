@@ -23,6 +23,13 @@ Parse all indices provided in `init.sql` and add their companies to the `com` ta
 pixi run python index.py
 ```
 
+Or activate the environment first:
+
+```bash
+pixi shell
+python index.py
+```
+
 ## Database Schema
 
 The future database layout is documented in [`docs/database_diagram.d2`](docs/database_diagram.d2). This D2 diagram shows the planned schema with the following tables:
