@@ -1,0 +1,13 @@
+[workspace]
+name = "doddsville"
+channels = ["conda-forge"]
+platforms = ["osx-arm64"]
+
+[dependencies]
+python = "3.10.*"
+beautifulsoup4 = ">=4.10"
+lxml = ">=4.7"
+numpy = ">=1.22"
+pandas = ">=1.4"
+textual = ">=0.89"
+rich = "*"
