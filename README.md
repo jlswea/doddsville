@@ -2,12 +2,10 @@
 
 ## Setup
 
-### 1. Activate the Conda Environment
-
-Before running any commands, activate the conda environment:
+### 1. Install Dependencies
 
 ```bash
-conda activate dv
+pixi install
 ```
 
 ### 2. Initialize the Database
@@ -22,7 +20,7 @@ sqlite3> .read schema.sql
 Parse all indices provided in `init.sql` and add their companies to the `com` table:
 
 ```bash
-python index.py
+pixi run python index.py
 ```
 
 ## Database Schema
@@ -37,6 +35,6 @@ The future database layout is documented in [`docs/database_diagram.d2`](docs/da
 
 ## Tools
 
-- [Conda](https://docs.conda.io/projects/conda/en/4.6.1/user-guide/tasks/manage-environments.html) - Environment management
+- [Pixi](https://pixi.sh) - Package and environment management
 - [SQLite CLI](https://sqlite.org/cli.html) - Database interaction
 - [D2](https://d2lang.com/) - Diagram language for the schema visualization
