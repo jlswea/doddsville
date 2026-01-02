@@ -1,6 +1,8 @@
 import argparse
+import os
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 
 # ANSI escape codes
@@ -10,6 +12,34 @@ RED = "\033[31m"
 GREEN = "\033[32m"
 YELLOW = "\033[33m"
 BLUE = "\033[34m"
+
+# Configuration
+CONFIG_DIR = Path.home() / ".doddsville"
+CONFIG_FILE = CONFIG_DIR / "config"
+DEFAULT_DB = "data.db"
+
+
+def load_config():
+    """Load configuration from ~/.doddsville/config file."""
+    config = {"db": DEFAULT_DB}
+
+    if CONFIG_FILE.exists():
+        with open(CONFIG_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    config[key.strip()] = value.strip()
+
+    return config
+
+
+def save_config(config):
+    """Save configuration to ~/.doddsville/config file."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_FILE, "w") as f:
+        for key, value in config.items():
+            f.write(f"{key}={value}\n")
 
 
 def cents_from_decimal_string(value):
@@ -339,6 +369,27 @@ def main() -> None:
     )
     add_report_args(parser_performance)
 
+    # --------------------------------------------------------------------------
+    #                           COMMAND: "config"
+    # --------------------------------------------------------------------------
+
+    parser_config = main_commands.add_parser(
+        "config", help="Manage CLI configuration."
+    )
+    config_subcommands = parser_config.add_subparsers(
+        dest="config_action", required=True, help="Config commands"
+    )
+
+    # --- "config show" sub-command ---
+    config_subcommands.add_parser("show", help="Show current configuration")
+
+    # --- "config set" sub-command ---
+    parser_config_set = config_subcommands.add_parser(
+        "set", help="Set a configuration value"
+    )
+    parser_config_set.add_argument("key", type=str, help="Config key (e.g., db)")
+    parser_config_set.add_argument("value", type=str, help="Config value")
+
     # --- "--version, -v" ---
     parser.add_argument(
         "-v",
@@ -348,12 +399,39 @@ def main() -> None:
         help="The installed version of the doddsville CLI",
     )
 
+    # --- "--db" ---
+    parser.add_argument(
+        "--db",
+        type=str,
+        default=None,
+        help="Path to SQLite database file (overrides config)",
+    )
+
     # --------------------------------------------------------------------------
     #                           Parse args
     # --------------------------------------------------------------------------
     args = parser.parse_args()
 
-    conn = sqlite3.connect("data.db")
+    # Load configuration
+    config = load_config()
+
+    # Handle config command (doesn't need database)
+    if args.command == "config":
+        if args.config_action == "show":
+            print(f"{BOLD}Configuration:{RESET}")
+            print(f"  Config file: {CONFIG_FILE}")
+            for key, value in config.items():
+                print(f"  {key}: {value}")
+        elif args.config_action == "set":
+            config[args.key] = args.value
+            save_config(config)
+            print(f"{GREEN}Set {args.key}={args.value}{RESET}")
+        return
+
+    # Determine database path (--db flag overrides config)
+    db_path = args.db if args.db else config.get("db", DEFAULT_DB)
+
+    conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = ON;")
 
