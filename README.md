@@ -8,7 +8,13 @@
 pixi install
 ```
 
-### 2. Initialize the Database
+### 2. Install the CLI
+
+```bash
+pixi run pip install -e .
+```
+
+### 3. Initialize the Database
 
 ```bash
 sqlite3 data.db
@@ -17,61 +23,61 @@ sqlite3> .read schema.sql
 
 ## Usage
 
-### CLI Commands
+All commands use `pixi run dv` (or just `dv` if you activate the shell with `pixi shell`).
 
 **Account Management:**
 
 ```bash
-pixi run python cli.py account add "Broker Name"   # Create account
-pixi run python cli.py account list                # List accounts
+pixi run dv account add "Broker Name"   # Create account
+pixi run dv account list                # List accounts
 ```
 
 **Record Transactions:**
 
 ```bash
 # Stock transactions
-pixi run python cli.py add buy "Apple" 10 150.00 -a "Broker"
-pixi run python cli.py add sell "Apple" 5 160.00 -a "Broker"
-pixi run python cli.py add dividend "Apple" 25.00 -a "Broker"
+pixi run dv add buy "Apple" 10 150.00 -a "Broker"
+pixi run dv add sell "Apple" 5 160.00 -a "Broker"
+pixi run dv add dividend "Apple" 25.00 -a "Broker"
 
 # Cash transactions
-pixi run python cli.py add deposit 1000.00 -a "Broker"
-pixi run python cli.py add withdrawal 500.00 -a "Broker"
-pixi run python cli.py add interest 10.00 -a "Cash"
+pixi run dv add deposit 1000.00 -a "Broker"
+pixi run dv add withdrawal 500.00 -a "Broker"
+pixi run dv add interest 10.00 -a "Cash"
 
 # Transfer between accounts
-pixi run python cli.py add transfer 500.00 --from "Cash" --to "Broker"
+pixi run dv add transfer 500.00 --from "Cash" --to "Broker"
 ```
 
 **List Transactions:**
 
 ```bash
-pixi run python cli.py list                    # All transactions
-pixi run python cli.py list -a "Broker"        # Filter by account
-pixi run python cli.py list -t buy             # Filter by type
+pixi run dv list                    # All transactions
+pixi run dv list -a "Broker"        # Filter by account
+pixi run dv list -t buy             # Filter by type
 ```
 
 **Reports:**
 
 ```bash
 # Summary of all metrics
-pixi run python cli.py report summary
+pixi run dv report summary
 
 # Account balances
-pixi run python cli.py report balance
+pixi run dv report balance
 
 # Cash flow (deposits, withdrawals, dividends, interest)
-pixi run python cli.py report cashflow
+pixi run dv report cashflow
 
 # Current stock holdings
-pixi run python cli.py report holdings
+pixi run dv report holdings
 
 # Investment performance (realized gains/losses)
-pixi run python cli.py report performance
+pixi run dv report performance
 
 # Filter by account or date range
-pixi run python cli.py report summary -a "Broker"
-pixi run python cli.py report cashflow --from 01.01.2024 --to 31.12.2024
+pixi run dv report summary -a "Broker"
+pixi run dv report cashflow --from 01.01.2024 --to 31.12.2024
 ```
 
 ### Index Parsing
