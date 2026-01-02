@@ -51,6 +51,29 @@ pixi run python cli.py list -a "Broker"        # Filter by account
 pixi run python cli.py list -t buy             # Filter by type
 ```
 
+**Reports:**
+
+```bash
+# Summary of all metrics
+pixi run python cli.py report summary
+
+# Account balances
+pixi run python cli.py report balance
+
+# Cash flow (deposits, withdrawals, dividends, interest)
+pixi run python cli.py report cashflow
+
+# Current stock holdings
+pixi run python cli.py report holdings
+
+# Investment performance (realized gains/losses)
+pixi run python cli.py report performance
+
+# Filter by account or date range
+pixi run python cli.py report summary -a "Broker"
+pixi run python cli.py report cashflow --from 01.01.2024 --to 31.12.2024
+```
+
 ### Index Parsing
 
 Parse all indices provided in `init.sql` and add their companies to the `company` table:
