@@ -27,7 +27,7 @@ create table account (
 create table transaction (
 	id integer primary key asc,
 	account integer not null references account (id),
-	company integer references com (id), -- null for type interest, deposit, withdrawal, transfer
+	company integer references company (id), -- null for type interest, deposit, withdrawal, transfer
 	type text check (type in (
 		'buy',        -- Purchase stock
         'sell',       -- Sell stock
@@ -43,6 +43,6 @@ create table transaction (
 	cost integer,           -- costs (fees, tax, etc.) in cents
 	date date not null,
 	linked_transaction integer references transaction (id), -- Double entry for transfers
-	foreign key (com) references com (id) on delete cascade,
+	foreign key (company) references company (id) on delete cascade
 );
 
