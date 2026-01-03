@@ -14,3 +14,7 @@ rich = "==14.2.0"
 pytest = "==9.0.2"
 pip = "==25.1.1"
 requests = "==2.32.3"
+
+[tasks]
+install-cli = "pip install -e . --quiet"
+dv = { cmd = "dv", depends-on = ["install-cli"] }

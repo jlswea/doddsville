@@ -10,9 +10,13 @@ pixi install
 
 ### 2. Install the CLI
 
+This step is required after each `pixi install`:
+
 ```bash
-pixi run pip install -e .
+pixi run install-cli
 ```
+
+Or use `pixi run dv` directly (auto-installs the CLI).
 
 ### 3. Initialize the Database
 
@@ -80,6 +84,36 @@ pixi run dv report summary -a "Broker"
 pixi run dv report cashflow --from 01.01.2024 --to 31.12.2024
 ```
 
+## Paperless-ngx Integration
+
+Attach documents to transactions using a paperless-ngx server.
+
+**Setup:**
+
+```bash
+# Configure paperless connection
+pixi run dv config set paperless_url http://localhost:8000
+pixi run dv config set paperless_token your-api-token
+
+# Verify connection
+pixi run dv config check
+```
+
+**Attach documents to transactions:**
+
+```bash
+# Link existing document by paperless ID
+pixi run dv add buy "Apple" 10 150.00 -a "Broker" --doc 123
+
+# Upload new document (auto-uploads to paperless)
+pixi run dv add buy "Apple" 10 150.00 -a "Broker" --doc ./receipt.pdf
+
+# Multiple documents
+pixi run dv add deposit 1000.00 -a "Broker" --doc 123 ./statement.pdf
+```
+
+Documents are shown as clickable URLs in `dv list` output.
+
 ### Index Parsing
 
 Parse all indices provided in `init.sql` and add their companies to the `company` table:
@@ -111,6 +145,7 @@ The schema contains the following tables:
 - **account** - Financial accounts (brokers, cash accounts)
 - **company** - Stock/security information (ISIN, name)
 - **transaction** - All transaction records with types: buy, sell, dividend, interest, deposit, withdrawal, transfer
+- **transaction_document** - Links transactions to paperless-ngx documents
 - **index** - Stock market indices
 - **raw_html** - Cached HTML data for scraping
 
