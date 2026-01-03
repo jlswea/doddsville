@@ -507,6 +507,13 @@ class TestConfigCommand:
         assert "Configuration" in stdout
         assert "db" in stdout
 
+    def test_config_check_not_configured(self, temp_db):
+        stdout, _, code = run_dv(temp_db, "config", "check")
+        assert code == 0
+        assert "Checking paperless-ngx connection" in stdout
+        assert "paperless_url" in stdout
+        assert "not configured" in stdout.lower() or "not set" in stdout.lower()
+
 
 # =============================================================================
 #                      DOCUMENT LINKING TESTS

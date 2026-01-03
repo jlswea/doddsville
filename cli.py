@@ -203,6 +203,55 @@ def insert_transaction_documents(cur, transaction_id: int, doc_ids: list):
         )
 
 
+def check_paperless_connection(config: dict) -> tuple:
+    """
+    Check if paperless-ngx API is reachable and configured correctly.
+    Returns: (success: bool, message: str, details: dict)
+    """
+    url = config.get("paperless_url")
+    token = config.get("paperless_token")
+
+    details = {
+        "url_configured": bool(url),
+        "token_configured": bool(token),
+    }
+
+    if not url:
+        return False, "paperless_url not configured", details
+    if not token:
+        return False, "paperless_token not configured", details
+
+    base_url = url.rstrip('/')
+    headers = {"Authorization": f"Token {token}"}
+
+    try:
+        # Check API root
+        response = requests.get(f"{base_url}/api/", headers=headers, timeout=10)
+        details["status_code"] = response.status_code
+        details["response_time_ms"] = int(response.elapsed.total_seconds() * 1000)
+
+        if response.status_code == 200:
+            # Try to get document count
+            docs_response = requests.get(f"{base_url}/api/documents/", headers=headers, timeout=10)
+            if docs_response.status_code == 200:
+                data = docs_response.json()
+                details["document_count"] = data.get("count", "unknown")
+            return True, "Connection successful", details
+        elif response.status_code == 401:
+            return False, "Authentication failed - check your token", details
+        elif response.status_code == 403:
+            return False, "Access forbidden - check token permissions", details
+        else:
+            return False, f"Unexpected status code: {response.status_code}", details
+
+    except requests.exceptions.ConnectionError:
+        return False, f"Cannot connect to {base_url}", details
+    except requests.exceptions.Timeout:
+        return False, "Connection timed out", details
+    except requests.exceptions.RequestException as e:
+        return False, f"Request error: {e}", details
+
+
 def get_or_prompt_account(cur, account_name=None):
     """Get account by name or prompt user to select one."""
     if account_name:
@@ -501,6 +550,9 @@ def main() -> None:
     parser_config_set.add_argument("key", type=str, help="Config key (e.g., db)")
     parser_config_set.add_argument("value", type=str, help="Config value")
 
+    # --- "config check" sub-command ---
+    config_subcommands.add_parser("check", help="Check paperless-ngx API connection")
+
     # --- "--version, -v" ---
     parser.add_argument(
         "-v",
@@ -537,6 +589,29 @@ def main() -> None:
             config[args.key] = args.value
             save_config(config)
             print(f"{GREEN}Set {args.key}={args.value}{RESET}")
+        elif args.config_action == "check":
+            print(f"{BOLD}Checking paperless-ngx connection...{RESET}\n")
+            success, message, details = check_paperless_connection(config)
+
+            # Show config status
+            url_status = f"{GREEN}✓{RESET}" if details.get("url_configured") else f"{RED}✗{RESET}"
+            token_status = f"{GREEN}✓{RESET}" if details.get("token_configured") else f"{RED}✗{RESET}"
+            print(f"  {url_status} paperless_url: {config.get('paperless_url', '(not set)')}")
+            print(f"  {token_status} paperless_token: {'(configured)' if details.get('token_configured') else '(not set)'}")
+
+            # Show connection result
+            if success:
+                print(f"\n  {GREEN}✓ {message}{RESET}")
+                if "response_time_ms" in details:
+                    print(f"    Response time: {details['response_time_ms']}ms")
+                if "document_count" in details:
+                    print(f"    Documents in paperless: {details['document_count']}")
+            else:
+                print(f"\n  {RED}✗ {message}{RESET}")
+                if not details.get("url_configured"):
+                    print(f"\n  Run: dv config set paperless_url http://your-server:8000")
+                if not details.get("token_configured"):
+                    print(f"  Run: dv config set paperless_token your-api-token")
         return
 
     # Determine database path (--db flag overrides config)
