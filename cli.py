@@ -1,8 +1,11 @@
 import argparse
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
+
+import requests
 
 
 # ANSI escape codes
@@ -100,6 +103,104 @@ def format_cents_colored(cents):
     elif cents < 0:
         return f"{RED}-{formatted}{RESET}"
     return formatted
+
+
+# Paperless-ngx integration functions
+def get_paperless_headers(config: dict) -> tuple:
+    """Get base URL and auth headers for paperless API."""
+    url = config.get("paperless_url")
+    token = config.get("paperless_token")
+
+    if not url or not token:
+        raise ValueError("paperless_url and paperless_token must be configured")
+
+    return url.rstrip('/'), {"Authorization": f"Token {token}"}
+
+
+def verify_document_exists(doc_id: int, config: dict) -> bool:
+    """Verify a document ID exists in paperless-ngx."""
+    base_url, headers = get_paperless_headers(config)
+    response = requests.get(f"{base_url}/api/documents/{doc_id}/", headers=headers)
+    return response.status_code == 200
+
+
+def upload_document_to_paperless(file_path: str, config: dict) -> int:
+    """Upload a document to paperless-ngx and return the document ID."""
+    base_url, headers = get_paperless_headers(config)
+
+    # Upload document (returns task UUID)
+    with open(file_path, "rb") as f:
+        files = {"document": (Path(file_path).name, f)}
+        response = requests.post(
+            f"{base_url}/api/documents/post_document/",
+            headers=headers,
+            files=files
+        )
+    response.raise_for_status()
+    task_id = response.text.strip('"')  # Returns UUID as quoted string
+
+    # Poll for task completion to get document ID
+    for _ in range(30):  # Max 30 seconds
+        time.sleep(1)
+        task_response = requests.get(
+            f"{base_url}/api/tasks/?task_id={task_id}",
+            headers=headers
+        )
+        task_response.raise_for_status()
+        tasks = task_response.json()
+
+        if tasks and tasks[0].get("status") == "SUCCESS":
+            return tasks[0]["related_document"]
+        elif tasks and tasks[0].get("status") == "FAILURE":
+            raise RuntimeError(f"Document upload failed: {tasks[0].get('result')}")
+
+    raise TimeoutError("Document upload timed out waiting for processing")
+
+
+def resolve_doc_args(doc_args: list, config: dict) -> tuple:
+    """
+    Resolve --doc arguments to paperless document IDs.
+    Returns: (successful_doc_ids, failed_args)
+    - Integers are verified via API before adding
+    - File paths are uploaded and the new document ID is returned
+    - Failures are collected but don't stop processing
+    """
+    doc_ids = []
+    failed = []
+
+    for arg in doc_args:
+        try:
+            if arg.isdigit():
+                doc_id = int(arg)
+                print(f"Verifying document {doc_id}...")
+                if verify_document_exists(doc_id, config):
+                    doc_ids.append(doc_id)
+                    print(f"  {GREEN}✓{RESET} Document {doc_id} exists")
+                else:
+                    print(f"  {RED}✗{RESET} Document {doc_id} not found in paperless")
+                    failed.append(arg)
+            elif Path(arg).exists():
+                print(f"Uploading {arg} to paperless-ngx...")
+                doc_id = upload_document_to_paperless(arg, config)
+                print(f"  {GREEN}✓{RESET} Uploaded as document {doc_id}")
+                doc_ids.append(doc_id)
+            else:
+                print(f"  {RED}✗{RESET} {arg} is not a valid ID or file path")
+                failed.append(arg)
+        except Exception as e:
+            print(f"  {RED}✗{RESET} Failed: {e}")
+            failed.append(arg)
+
+    return doc_ids, failed
+
+
+def insert_transaction_documents(cur, transaction_id: int, doc_ids: list):
+    """Link paperless document IDs to a transaction."""
+    for doc_id in doc_ids:
+        cur.execute(
+            "INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, ?)",
+            (transaction_id, doc_id)
+        )
 
 
 def get_or_prompt_account(cur, account_name=None):
@@ -219,7 +320,7 @@ def main() -> None:
     def add_common_args(p, needs_company=False):
         p.add_argument("--account", "-a", type=str, help="Account name")
         p.add_argument(
-            "--date", "-d",
+            "--date",
             type=validate_date_format,
             default=datetime.now().strftime("%d.%m.%Y"),
             help="Transaction date (DD.MM.YYYY)",
@@ -229,6 +330,11 @@ def main() -> None:
             type=cents_from_decimal_string,
             default=0,
             help="Fees/costs in euros (e.g., 1.50)",
+        )
+        p.add_argument(
+            "--doc", "-d",
+            nargs='+',
+            help="Paperless document ID(s) or file path(s) to upload",
         )
 
     # --- "add buy" sub-command ---
@@ -314,6 +420,11 @@ def main() -> None:
         type=cents_from_decimal_string,
         default=0,
         help="Transfer fees (e.g., 0.50)",
+    )
+    parser_transfer.add_argument(
+        "--doc",
+        nargs='+',
+        help="Paperless document ID(s) or file path(s) to upload",
     )
 
     # --------------------------------------------------------------------------
@@ -472,7 +583,8 @@ def main() -> None:
                 t.total_value,
                 t.cost,
                 t.date,
-                t.linked_transaction
+                t.linked_transaction,
+                (SELECT GROUP_CONCAT(paperless_id) FROM transaction_document WHERE transaction_id = t.id) as doc_ids
             FROM "transaction" t
             JOIN account a ON t.account = a.id
             LEFT JOIN company c ON t.company = c.id
@@ -498,16 +610,28 @@ def main() -> None:
         if not transactions:
             print("No transactions found.")
         else:
-            print(f"{BOLD}{'ID':<5} {'Date':<12} {'Account':<15} {'Type':<10} {'Company':<20} {'Qty':<6} {'Unit':<10} {'Total':<12} {'Cost':<8}{RESET}")
-            print("-" * 100)
+            # Get paperless URL from config for document links
+            paperless_url = config.get("paperless_url", "").rstrip('/')
+
+            print(f"{BOLD}{'ID':<5} {'Date':<12} {'Account':<15} {'Type':<10} {'Company':<20} {'Qty':<6} {'Unit':<10} {'Total':<12} {'Cost':<8} {'Docs'}{RESET}")
+            print("-" * 115)
             for t in transactions:
-                tid, account, ttype, company, qty, unit, total, cost, date, linked = t
+                tid, account, ttype, company, qty, unit, total, cost, date, linked, doc_ids = t
                 company_str = company or "-"
                 qty_str = str(qty) if qty else "-"
                 unit_str = format_cents(unit) if unit else "-"
                 total_str = format_cents(total) if total else "-"
                 cost_str = format_cents(cost) if cost else "-"
-                print(f"{tid:<5} {date:<12} {account:<15} {ttype:<10} {company_str:<20} {qty_str:<6} {unit_str:<10} {total_str:<12} {cost_str:<8}")
+
+                # Format document links
+                if doc_ids and paperless_url:
+                    doc_urls = ", ".join(f"{paperless_url}/documents/{d}" for d in doc_ids.split(","))
+                elif doc_ids:
+                    doc_urls = doc_ids  # Just show IDs if no URL configured
+                else:
+                    doc_urls = "-"
+
+                print(f"{tid:<5} {date:<12} {account:<15} {ttype:<10} {company_str:<20} {qty_str:<6} {unit_str:<10} {total_str:<12} {cost_str:<8} {doc_urls}")
 
     # --------------------------------------------------------------------------
     #                           HANDLE: "add"
@@ -525,6 +649,11 @@ def main() -> None:
                 conn.close()
                 return
 
+            # Resolve document arguments
+            doc_ids, failed_docs = [], []
+            if args.doc:
+                doc_ids, failed_docs = resolve_doc_args(args.doc, config)
+
             total_value = args.quantity * args.price
             date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
 
@@ -536,6 +665,8 @@ def main() -> None:
             print(f"  Total:    {format_cents(total_value)}")
             print(f"  Cost:     {format_cents(args.cost)}")
             print(f"  Date:     {date_str}")
+            if doc_ids:
+                print(f"  Docs:     {', '.join(str(d) for d in doc_ids)}")
 
             if input("\nCommit? (y/N) ").lower() == "y":
                 cur.execute(
@@ -545,7 +676,21 @@ def main() -> None:
                     (account[0], company[0], args.quantity, args.price, total_value, args.cost, date_str)
                 )
                 conn.commit()
-                print(f"{GREEN}Transaction recorded.{RESET}")
+                transaction_id = cur.lastrowid
+                print(f"{GREEN}Transaction recorded (ID: {transaction_id}).{RESET}")
+
+                # Link documents
+                if doc_ids:
+                    insert_transaction_documents(cur, transaction_id, doc_ids)
+                    conn.commit()
+                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+
+                if failed_docs:
+                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    for f in failed_docs:
+                        print(f"  - {f}")
+                    print(f"\nTo attach manually later, use:")
+                    print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- SELL -----
         elif args.transaction_type == "sell":
@@ -559,6 +704,11 @@ def main() -> None:
                 conn.close()
                 return
 
+            # Resolve document arguments
+            doc_ids, failed_docs = [], []
+            if args.doc:
+                doc_ids, failed_docs = resolve_doc_args(args.doc, config)
+
             total_value = args.quantity * args.price
             date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
 
@@ -570,6 +720,8 @@ def main() -> None:
             print(f"  Total:    {format_cents(total_value)}")
             print(f"  Cost:     {format_cents(args.cost)}")
             print(f"  Date:     {date_str}")
+            if doc_ids:
+                print(f"  Docs:     {', '.join(str(d) for d in doc_ids)}")
 
             if input("\nCommit? (y/N) ").lower() == "y":
                 cur.execute(
@@ -579,7 +731,21 @@ def main() -> None:
                     (account[0], company[0], args.quantity, args.price, total_value, args.cost, date_str)
                 )
                 conn.commit()
-                print(f"{GREEN}Transaction recorded.{RESET}")
+                transaction_id = cur.lastrowid
+                print(f"{GREEN}Transaction recorded (ID: {transaction_id}).{RESET}")
+
+                # Link documents
+                if doc_ids:
+                    insert_transaction_documents(cur, transaction_id, doc_ids)
+                    conn.commit()
+                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+
+                if failed_docs:
+                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    for f in failed_docs:
+                        print(f"  - {f}")
+                    print(f"\nTo attach manually later, use:")
+                    print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- DIVIDEND -----
         elif args.transaction_type == "dividend":
@@ -593,6 +759,11 @@ def main() -> None:
                 conn.close()
                 return
 
+            # Resolve document arguments
+            doc_ids, failed_docs = [], []
+            if args.doc:
+                doc_ids, failed_docs = resolve_doc_args(args.doc, config)
+
             date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
 
             print(f"\n{BOLD}Recording DIVIDEND transaction:{RESET}")
@@ -601,6 +772,8 @@ def main() -> None:
             print(f"  Amount:   {format_cents(args.amount)}")
             print(f"  Cost:     {format_cents(args.cost)}")
             print(f"  Date:     {date_str}")
+            if doc_ids:
+                print(f"  Docs:     {', '.join(str(d) for d in doc_ids)}")
 
             if input("\nCommit? (y/N) ").lower() == "y":
                 cur.execute(
@@ -610,7 +783,21 @@ def main() -> None:
                     (account[0], company[0], args.amount, args.cost, date_str)
                 )
                 conn.commit()
-                print(f"{GREEN}Transaction recorded.{RESET}")
+                transaction_id = cur.lastrowid
+                print(f"{GREEN}Transaction recorded (ID: {transaction_id}).{RESET}")
+
+                # Link documents
+                if doc_ids:
+                    insert_transaction_documents(cur, transaction_id, doc_ids)
+                    conn.commit()
+                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+
+                if failed_docs:
+                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    for f in failed_docs:
+                        print(f"  - {f}")
+                    print(f"\nTo attach manually later, use:")
+                    print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- INTEREST -----
         elif args.transaction_type == "interest":
@@ -619,6 +806,11 @@ def main() -> None:
                 conn.close()
                 return
 
+            # Resolve document arguments
+            doc_ids, failed_docs = [], []
+            if args.doc:
+                doc_ids, failed_docs = resolve_doc_args(args.doc, config)
+
             date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
 
             print(f"\n{BOLD}Recording INTEREST transaction:{RESET}")
@@ -626,6 +818,8 @@ def main() -> None:
             print(f"  Amount:   {format_cents(args.amount)}")
             print(f"  Cost:     {format_cents(args.cost)}")
             print(f"  Date:     {date_str}")
+            if doc_ids:
+                print(f"  Docs:     {', '.join(str(d) for d in doc_ids)}")
 
             if input("\nCommit? (y/N) ").lower() == "y":
                 cur.execute(
@@ -635,7 +829,21 @@ def main() -> None:
                     (account[0], args.amount, args.cost, date_str)
                 )
                 conn.commit()
-                print(f"{GREEN}Transaction recorded.{RESET}")
+                transaction_id = cur.lastrowid
+                print(f"{GREEN}Transaction recorded (ID: {transaction_id}).{RESET}")
+
+                # Link documents
+                if doc_ids:
+                    insert_transaction_documents(cur, transaction_id, doc_ids)
+                    conn.commit()
+                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+
+                if failed_docs:
+                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    for f in failed_docs:
+                        print(f"  - {f}")
+                    print(f"\nTo attach manually later, use:")
+                    print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- DEPOSIT -----
         elif args.transaction_type == "deposit":
@@ -644,6 +852,11 @@ def main() -> None:
                 conn.close()
                 return
 
+            # Resolve document arguments
+            doc_ids, failed_docs = [], []
+            if args.doc:
+                doc_ids, failed_docs = resolve_doc_args(args.doc, config)
+
             date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
 
             print(f"\n{BOLD}Recording DEPOSIT transaction:{RESET}")
@@ -651,6 +864,8 @@ def main() -> None:
             print(f"  Amount:   {format_cents(args.amount)}")
             print(f"  Cost:     {format_cents(args.cost)}")
             print(f"  Date:     {date_str}")
+            if doc_ids:
+                print(f"  Docs:     {', '.join(str(d) for d in doc_ids)}")
 
             if input("\nCommit? (y/N) ").lower() == "y":
                 cur.execute(
@@ -660,7 +875,21 @@ def main() -> None:
                     (account[0], args.amount, args.cost, date_str)
                 )
                 conn.commit()
-                print(f"{GREEN}Transaction recorded.{RESET}")
+                transaction_id = cur.lastrowid
+                print(f"{GREEN}Transaction recorded (ID: {transaction_id}).{RESET}")
+
+                # Link documents
+                if doc_ids:
+                    insert_transaction_documents(cur, transaction_id, doc_ids)
+                    conn.commit()
+                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+
+                if failed_docs:
+                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    for f in failed_docs:
+                        print(f"  - {f}")
+                    print(f"\nTo attach manually later, use:")
+                    print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- WITHDRAWAL -----
         elif args.transaction_type == "withdrawal":
@@ -669,6 +898,11 @@ def main() -> None:
                 conn.close()
                 return
 
+            # Resolve document arguments
+            doc_ids, failed_docs = [], []
+            if args.doc:
+                doc_ids, failed_docs = resolve_doc_args(args.doc, config)
+
             date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
 
             print(f"\n{BOLD}Recording WITHDRAWAL transaction:{RESET}")
@@ -676,6 +910,8 @@ def main() -> None:
             print(f"  Amount:   {format_cents(args.amount)}")
             print(f"  Cost:     {format_cents(args.cost)}")
             print(f"  Date:     {date_str}")
+            if doc_ids:
+                print(f"  Docs:     {', '.join(str(d) for d in doc_ids)}")
 
             if input("\nCommit? (y/N) ").lower() == "y":
                 cur.execute(
@@ -685,7 +921,21 @@ def main() -> None:
                     (account[0], args.amount, args.cost, date_str)
                 )
                 conn.commit()
-                print(f"{GREEN}Transaction recorded.{RESET}")
+                transaction_id = cur.lastrowid
+                print(f"{GREEN}Transaction recorded (ID: {transaction_id}).{RESET}")
+
+                # Link documents
+                if doc_ids:
+                    insert_transaction_documents(cur, transaction_id, doc_ids)
+                    conn.commit()
+                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+
+                if failed_docs:
+                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    for f in failed_docs:
+                        print(f"  - {f}")
+                    print(f"\nTo attach manually later, use:")
+                    print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- TRANSFER -----
         elif args.transaction_type == "transfer":
@@ -734,6 +984,11 @@ def main() -> None:
                 conn.close()
                 return
 
+            # Resolve document arguments
+            doc_ids, failed_docs = [], []
+            if args.doc:
+                doc_ids, failed_docs = resolve_doc_args(args.doc, config)
+
             date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
 
             print(f"\n{BOLD}Recording TRANSFER transaction:{RESET}")
@@ -742,6 +997,8 @@ def main() -> None:
             print(f"  Amount:   {format_cents(args.amount)}")
             print(f"  Cost:     {format_cents(args.cost)}")
             print(f"  Date:     {date_str}")
+            if doc_ids:
+                print(f"  Docs:     {', '.join(str(d) for d in doc_ids)}")
 
             if input("\nCommit? (y/N) ").lower() == "y":
                 # Insert outgoing transfer (from source account)
@@ -770,6 +1027,19 @@ def main() -> None:
 
                 conn.commit()
                 print(f"{GREEN}Transfer recorded (IDs: {outgoing_id} <-> {incoming_id}).{RESET}")
+
+                # Link documents to the outgoing transaction
+                if doc_ids:
+                    insert_transaction_documents(cur, outgoing_id, doc_ids)
+                    conn.commit()
+                    print(f"Linked {len(doc_ids)} document(s) to transaction {outgoing_id}")
+
+                if failed_docs:
+                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    for f in failed_docs:
+                        print(f"  - {f}")
+                    print(f"\nTo attach manually later, use:")
+                    print(f"  dv doc add {outgoing_id} <paperless_doc_id>")
 
     # --------------------------------------------------------------------------
     #                           HANDLE: "report"

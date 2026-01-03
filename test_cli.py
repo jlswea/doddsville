@@ -508,6 +508,215 @@ class TestConfigCommand:
         assert "db" in stdout
 
 
+# =============================================================================
+#                      DOCUMENT LINKING TESTS
+# =============================================================================
+
+
+class TestTransactionDocumentSchema:
+    """Test transaction_document table schema and constraints."""
+
+    def test_transaction_document_table_exists(self, temp_db):
+        conn = sqlite3.connect(temp_db)
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='transaction_document'
+        """)
+        result = cur.fetchone()
+        assert result is not None
+        conn.close()
+
+    def test_insert_transaction_document(self, temp_db):
+        conn = sqlite3.connect(temp_db)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+
+        # Add a transaction first
+        cur.execute("""
+            INSERT INTO "transaction" (account, type, total_value, date)
+            VALUES (1, 'deposit', 10000, '2024-01-01')
+        """)
+        transaction_id = cur.lastrowid
+
+        # Link a document
+        cur.execute("""
+            INSERT INTO transaction_document (transaction_id, paperless_id)
+            VALUES (?, 123)
+        """, (transaction_id,))
+        conn.commit()
+
+        # Verify
+        cur.execute("SELECT paperless_id FROM transaction_document WHERE transaction_id = ?", (transaction_id,))
+        result = cur.fetchone()
+        assert result[0] == 123
+        conn.close()
+
+    def test_unique_constraint(self, temp_db):
+        conn = sqlite3.connect(temp_db)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+
+        # Add a transaction
+        cur.execute("""
+            INSERT INTO "transaction" (account, type, total_value, date)
+            VALUES (1, 'deposit', 10000, '2024-01-01')
+        """)
+        transaction_id = cur.lastrowid
+
+        # Link same document twice should fail
+        cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 123)", (transaction_id,))
+        with pytest.raises(sqlite3.IntegrityError):
+            cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 123)", (transaction_id,))
+        conn.close()
+
+    def test_cascade_delete(self, temp_db):
+        conn = sqlite3.connect(temp_db)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+
+        # Add a transaction
+        cur.execute("""
+            INSERT INTO "transaction" (account, type, total_value, date)
+            VALUES (1, 'deposit', 10000, '2024-01-01')
+        """)
+        transaction_id = cur.lastrowid
+
+        # Link documents
+        cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 123)", (transaction_id,))
+        cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 456)", (transaction_id,))
+        conn.commit()
+
+        # Delete the transaction
+        cur.execute('DELETE FROM "transaction" WHERE id = ?', (transaction_id,))
+        conn.commit()
+
+        # Document links should be deleted
+        cur.execute("SELECT * FROM transaction_document WHERE transaction_id = ?", (transaction_id,))
+        results = cur.fetchall()
+        assert len(results) == 0
+        conn.close()
+
+    def test_multiple_documents_per_transaction(self, temp_db):
+        conn = sqlite3.connect(temp_db)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+
+        # Add a transaction
+        cur.execute("""
+            INSERT INTO "transaction" (account, type, total_value, date)
+            VALUES (1, 'buy', 15000, '2024-01-15')
+        """)
+        transaction_id = cur.lastrowid
+
+        # Link multiple documents
+        cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 100)", (transaction_id,))
+        cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 101)", (transaction_id,))
+        cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 102)", (transaction_id,))
+        conn.commit()
+
+        # Verify all linked
+        cur.execute("SELECT paperless_id FROM transaction_document WHERE transaction_id = ? ORDER BY paperless_id", (transaction_id,))
+        results = cur.fetchall()
+        assert len(results) == 3
+        assert [r[0] for r in results] == [100, 101, 102]
+        conn.close()
+
+
+class TestInsertTransactionDocuments:
+    """Test the insert_transaction_documents helper function."""
+
+    def test_insert_single_document(self, temp_db):
+        conn = sqlite3.connect(temp_db)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+
+        # Add a transaction
+        cur.execute("""
+            INSERT INTO "transaction" (account, type, total_value, date)
+            VALUES (1, 'deposit', 10000, '2024-01-01')
+        """)
+        transaction_id = cur.lastrowid
+        conn.commit()
+
+        # Use helper function
+        cli.insert_transaction_documents(cur, transaction_id, [123])
+        conn.commit()
+
+        # Verify
+        cur.execute("SELECT paperless_id FROM transaction_document WHERE transaction_id = ?", (transaction_id,))
+        result = cur.fetchone()
+        assert result[0] == 123
+        conn.close()
+
+    def test_insert_multiple_documents(self, temp_db):
+        conn = sqlite3.connect(temp_db)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+
+        # Add a transaction
+        cur.execute("""
+            INSERT INTO "transaction" (account, type, total_value, date)
+            VALUES (1, 'buy', 15000, '2024-01-15')
+        """)
+        transaction_id = cur.lastrowid
+        conn.commit()
+
+        # Use helper function with multiple docs
+        cli.insert_transaction_documents(cur, transaction_id, [100, 200, 300])
+        conn.commit()
+
+        # Verify all linked
+        cur.execute("SELECT paperless_id FROM transaction_document WHERE transaction_id = ? ORDER BY paperless_id", (transaction_id,))
+        results = cur.fetchall()
+        assert len(results) == 3
+        assert [r[0] for r in results] == [100, 200, 300]
+        conn.close()
+
+
+class TestListWithDocuments:
+    """Test list command shows document information."""
+
+    def test_list_shows_docs_column(self, temp_db):
+        # Add a transaction with document
+        conn = sqlite3.connect(temp_db)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+        cur.execute("""
+            INSERT INTO "transaction" (account, type, total_value, date)
+            VALUES (1, 'deposit', 10000, '2024-01-01')
+        """)
+        transaction_id = cur.lastrowid
+        cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 123)", (transaction_id,))
+        conn.commit()
+        conn.close()
+
+        stdout, _, code = run_dv(temp_db, "list")
+        assert code == 0
+        assert "Docs" in stdout
+        assert "123" in stdout
+
+    def test_list_shows_multiple_docs(self, temp_db):
+        # Add a transaction with multiple documents
+        conn = sqlite3.connect(temp_db)
+        cur = conn.cursor()
+        cur.execute("PRAGMA foreign_keys = ON;")
+        cur.execute("""
+            INSERT INTO "transaction" (account, type, total_value, date)
+            VALUES (1, 'deposit', 10000, '2024-01-01')
+        """)
+        transaction_id = cur.lastrowid
+        cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 100)", (transaction_id,))
+        cur.execute("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, 200)", (transaction_id,))
+        conn.commit()
+        conn.close()
+
+        stdout, _, code = run_dv(temp_db, "list")
+        assert code == 0
+        assert "100" in stdout
+        assert "200" in stdout
+
+
 class TestDatabaseFlag:
     """Test --db flag functionality."""
 

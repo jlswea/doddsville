@@ -45,3 +45,10 @@ create table "transaction" (
 	linked_transaction integer references "transaction" (id), -- Double entry for transfers
 	foreign key (company) references company (id) on delete cascade
 );
+
+create table transaction_document (
+	id integer primary key asc,
+	transaction_id integer not null references "transaction" (id) on delete cascade,
+	paperless_id integer not null,
+	unique(transaction_id, paperless_id)
+);
