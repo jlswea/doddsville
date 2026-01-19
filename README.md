@@ -21,9 +21,10 @@ Or use `pixi run dv` directly (auto-installs the CLI).
 ### 3. Initialize the Database
 
 ```bash
-sqlite3 data.db
-sqlite3> .read schema.sql
+pixi run migrate
 ```
+
+This runs all pending database migrations using [yoyo-migrations](https://ollycope.com/software/yoyo/latest/).
 
 ## Usage
 
@@ -112,6 +113,19 @@ pixi run dv add buy "Apple" 10 150.00 -a "Broker" --doc ./receipt.pdf
 pixi run dv add deposit 1000.00 -a "Broker" --doc 123 ./statement.pdf
 ```
 
+**Add documents to existing transactions:**
+
+```bash
+# Link by paperless document ID
+pixi run dv doc add 42 123
+
+# Upload and link a file
+pixi run dv doc add 42 ./receipt.pdf
+
+# Multiple documents at once
+pixi run dv doc add 42 123 456 ./statement.pdf
+```
+
 Documents are shown as clickable URLs in `dv list` output.
 
 ### Index Parsing
@@ -122,13 +136,19 @@ Parse all indices provided in `init.sql` and add their companies to the `company
 pixi run python index.py
 ```
 
-### Database Migration
+### Database Migrations
 
-If upgrading from an older schema:
+Migrations are managed with [yoyo-migrations](https://ollycope.com/software/yoyo/latest/).
 
 ```bash
-pixi run python migrate.py
+# Apply pending migrations
+pixi run migrate
+
+# Create a new migration
+pixi run migrate-new "add_new_table"
 ```
+
+Migration files are in the `migrations/` directory as plain SQL.
 
 ### Running Tests
 

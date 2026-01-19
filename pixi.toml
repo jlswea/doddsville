@@ -15,6 +15,11 @@ pytest = "==9.0.2"
 pip = "==25.1.1"
 requests = "==2.32.3"
 
+[pypi-dependencies]
+yoyo-migrations = ">=8.2.0"
+
 [tasks]
 install-cli = "pip install -e . --quiet"
 dv = { cmd = "dv", depends-on = ["install-cli"] }
+migrate = "yoyo apply"
+migrate-new = "yoyo new ./migrations -m"

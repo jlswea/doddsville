@@ -2,6 +2,6 @@ __pycache__/
 .vscode
 .DS_Store
 *.log
-*.db
+*.db*
 .pixi/
 *.egg-info/

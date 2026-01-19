@@ -533,6 +533,30 @@ def main() -> None:
     add_report_args(parser_performance)
 
     # --------------------------------------------------------------------------
+    #                           COMMAND: "doc"
+    # --------------------------------------------------------------------------
+
+    parser_doc = main_commands.add_parser(
+        "doc", help="Manage documents linked to transactions."
+    )
+    doc_subcommands = parser_doc.add_subparsers(
+        dest="doc_action", required=True, help="Document commands"
+    )
+
+    # --- "doc add" sub-command ---
+    parser_doc_add = doc_subcommands.add_parser(
+        "add", help="Link paperless document(s) to a transaction"
+    )
+    parser_doc_add.add_argument(
+        "transaction_id", type=int, help="Transaction ID to link documents to"
+    )
+    parser_doc_add.add_argument(
+        "docs",
+        nargs="+",
+        help="Paperless document ID(s) or file path(s) to upload",
+    )
+
+    # --------------------------------------------------------------------------
     #                           COMMAND: "config"
     # --------------------------------------------------------------------------
 
@@ -657,6 +681,56 @@ def main() -> None:
                 print(f"{BOLD}Accounts:{RESET}")
                 for acc in accounts:
                     print(f"  {acc[0]}: {acc[1]}")
+
+    # --------------------------------------------------------------------------
+    #                           HANDLE: "doc"
+    # --------------------------------------------------------------------------
+    elif args.command == "doc":
+        if args.doc_action == "add":
+            # Verify transaction exists
+            cur.execute(
+                'SELECT id, type, date FROM "transaction" WHERE id = ?',
+                (args.transaction_id,),
+            )
+            transaction = cur.fetchone()
+            if not transaction:
+                print(f"{RED}Transaction {args.transaction_id} not found.{RESET}")
+                conn.close()
+                return
+
+            # Resolve document arguments
+            doc_ids, failed_docs = resolve_doc_args(args.docs, config)
+
+            if doc_ids:
+                # Check for duplicates
+                cur.execute(
+                    "SELECT paperless_id FROM transaction_document WHERE transaction_id = ?",
+                    (args.transaction_id,),
+                )
+                existing = {row[0] for row in cur.fetchall()}
+                new_docs = [d for d in doc_ids if d not in existing]
+                duplicates = [d for d in doc_ids if d in existing]
+
+                if duplicates:
+                    print(
+                        f"{YELLOW}Skipping already linked documents: {', '.join(str(d) for d in duplicates)}{RESET}"
+                    )
+
+                if new_docs:
+                    insert_transaction_documents(cur, args.transaction_id, new_docs)
+                    conn.commit()
+                    print(
+                        f"{GREEN}Linked {len(new_docs)} document(s) to transaction {args.transaction_id}.{RESET}"
+                    )
+                elif not duplicates:
+                    print("No documents were linked.")
+            else:
+                print(f"{RED}No valid documents to link.{RESET}")
+
+            if failed_docs:
+                print(f"\n{YELLOW}Failed to process:{RESET}")
+                for f in failed_docs:
+                    print(f"  - {f}")
 
     # --------------------------------------------------------------------------
     #                           HANDLE: "list"
