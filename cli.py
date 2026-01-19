@@ -1,5 +1,4 @@
 import argparse
-import os
 import sqlite3
 import time
 from datetime import datetime
@@ -114,7 +113,7 @@ def get_paperless_headers(config: dict) -> tuple:
     if not url or not token:
         raise ValueError("paperless_url and paperless_token must be configured")
 
-    return url.rstrip('/'), {"Authorization": f"Token {token}"}
+    return url.rstrip("/"), {"Authorization": f"Token {token}"}
 
 
 def verify_document_exists(doc_id: int, config: dict) -> bool:
@@ -132,9 +131,7 @@ def upload_document_to_paperless(file_path: str, config: dict) -> int:
     with open(file_path, "rb") as f:
         files = {"document": (Path(file_path).name, f)}
         response = requests.post(
-            f"{base_url}/api/documents/post_document/",
-            headers=headers,
-            files=files
+            f"{base_url}/api/documents/post_document/", headers=headers, files=files
         )
     response.raise_for_status()
     task_id = response.text.strip('"')  # Returns UUID as quoted string
@@ -143,8 +140,7 @@ def upload_document_to_paperless(file_path: str, config: dict) -> int:
     for _ in range(30):  # Max 30 seconds
         time.sleep(1)
         task_response = requests.get(
-            f"{base_url}/api/tasks/?task_id={task_id}",
-            headers=headers
+            f"{base_url}/api/tasks/?task_id={task_id}", headers=headers
         )
         task_response.raise_for_status()
         tasks = task_response.json()
@@ -199,7 +195,7 @@ def insert_transaction_documents(cur, transaction_id: int, doc_ids: list):
     for doc_id in doc_ids:
         cur.execute(
             "INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, ?)",
-            (transaction_id, doc_id)
+            (transaction_id, doc_id),
         )
 
 
@@ -221,7 +217,7 @@ def check_paperless_connection(config: dict) -> tuple:
     if not token:
         return False, "paperless_token not configured", details
 
-    base_url = url.rstrip('/')
+    base_url = url.rstrip("/")
     headers = {"Authorization": f"Token {token}"}
 
     try:
@@ -232,7 +228,9 @@ def check_paperless_connection(config: dict) -> tuple:
 
         if response.status_code == 200:
             # Try to get document count
-            docs_response = requests.get(f"{base_url}/api/documents/", headers=headers, timeout=10)
+            docs_response = requests.get(
+                f"{base_url}/api/documents/", headers=headers, timeout=10
+            )
             if docs_response.status_code == 200:
                 data = docs_response.json()
                 details["document_count"] = data.get("count", "unknown")
@@ -259,7 +257,9 @@ def get_or_prompt_account(cur, account_name=None):
         result = cur.fetchone()
         if result:
             return result
-        cur.execute("SELECT id, name FROM account WHERE name LIKE ?", (f"%{account_name}%",))
+        cur.execute(
+            "SELECT id, name FROM account WHERE name LIKE ?", (f"%{account_name}%",)
+        )
         results = cur.fetchall()
     else:
         cur.execute("SELECT id, name FROM account")
@@ -323,17 +323,13 @@ def main() -> None:
     #                           COMMAND: "account"
     # --------------------------------------------------------------------------
 
-    parser_account = main_commands.add_parser(
-        "account", help="Manage accounts"
-    )
+    parser_account = main_commands.add_parser("account", help="Manage accounts")
     account_subcommands = parser_account.add_subparsers(
         dest="account_action", required=True, help="Account commands"
     )
 
     # --- "account add" sub-command ---
-    parser_account_add = account_subcommands.add_parser(
-        "add", help="Add a new account"
-    )
+    parser_account_add = account_subcommands.add_parser("add", help="Add a new account")
     parser_account_add.add_argument("name", type=str, help="Account name")
 
     # --- "account list" sub-command ---
@@ -346,9 +342,7 @@ def main() -> None:
     parser_list = main_commands.add_parser(
         "list", help="List all recorded transactions."
     )
-    parser_list.add_argument(
-        "--account", "-a", type=str, help="Filter by account name"
-    )
+    parser_list.add_argument("--account", "-a", type=str, help="Filter by account name")
     parser_list.add_argument(
         "--type", "-t", type=str, help="Filter by transaction type"
     )
@@ -357,9 +351,7 @@ def main() -> None:
     #                           COMMAND: "add"
     # --------------------------------------------------------------------------
 
-    parser_add = main_commands.add_parser(
-        "add", help="Add a new transaction."
-    )
+    parser_add = main_commands.add_parser("add", help="Add a new transaction.")
 
     add_transaction_types = parser_add.add_subparsers(
         dest="transaction_type", required=True, help="Type of transaction to add"
@@ -375,14 +367,16 @@ def main() -> None:
             help="Transaction date (DD.MM.YYYY)",
         )
         p.add_argument(
-            "--cost", "-c",
+            "--cost",
+            "-c",
             type=cents_from_decimal_string,
             default=0,
             help="Fees/costs in euros (e.g., 1.50)",
         )
         p.add_argument(
-            "--doc", "-d",
-            nargs='+',
+            "--doc",
+            "-d",
+            nargs="+",
             help="Paperless document ID(s) or file path(s) to upload",
         )
 
@@ -398,9 +392,7 @@ def main() -> None:
     add_common_args(parser_buy, needs_company=True)
 
     # --- "add sell" sub-command ---
-    parser_sell = add_transaction_types.add_parser(
-        "sell", help="Record a stock sale."
-    )
+    parser_sell = add_transaction_types.add_parser("sell", help="Record a stock sale.")
     parser_sell.add_argument("name", type=str, help="Company name")
     parser_sell.add_argument("quantity", type=int, help="Number of shares sold")
     parser_sell.add_argument(
@@ -414,7 +406,9 @@ def main() -> None:
     )
     parser_div.add_argument("name", type=str, help="Company name")
     parser_div.add_argument(
-        "amount", type=cents_from_decimal_string, help="Total dividend amount (e.g., 50.00)"
+        "amount",
+        type=cents_from_decimal_string,
+        help="Total dividend amount (e.g., 50.00)",
     )
     add_common_args(parser_div, needs_company=True)
 
@@ -441,7 +435,9 @@ def main() -> None:
         "withdrawal", help="Record a withdrawal."
     )
     parser_withdrawal.add_argument(
-        "amount", type=cents_from_decimal_string, help="Withdrawal amount (e.g., 500.00)"
+        "amount",
+        type=cents_from_decimal_string,
+        help="Withdrawal amount (e.g., 500.00)",
     )
     add_common_args(parser_withdrawal)
 
@@ -459,20 +455,22 @@ def main() -> None:
         "--to", dest="to_account", type=str, required=True, help="Destination account"
     )
     parser_transfer.add_argument(
-        "--date", "-d",
+        "--date",
+        "-d",
         type=validate_date_format,
         default=datetime.now().strftime("%d.%m.%Y"),
         help="Transaction date (DD.MM.YYYY)",
     )
     parser_transfer.add_argument(
-        "--cost", "-c",
+        "--cost",
+        "-c",
         type=cents_from_decimal_string,
         default=0,
         help="Transfer fees (e.g., 0.50)",
     )
     parser_transfer.add_argument(
         "--doc",
-        nargs='+',
+        nargs="+",
         help="Paperless document ID(s) or file path(s) to upload",
     )
 
@@ -491,12 +489,16 @@ def main() -> None:
     def add_report_args(p):
         p.add_argument("--account", "-a", type=str, help="Filter by account name")
         p.add_argument(
-            "--from", dest="from_date", type=validate_date_format,
-            help="Start date (DD.MM.YYYY)"
+            "--from",
+            dest="from_date",
+            type=validate_date_format,
+            help="Start date (DD.MM.YYYY)",
         )
         p.add_argument(
-            "--to", dest="to_date", type=validate_date_format,
-            help="End date (DD.MM.YYYY)"
+            "--to",
+            dest="to_date",
+            type=validate_date_format,
+            help="End date (DD.MM.YYYY)",
         )
 
     # --- "report summary" sub-command ---
@@ -525,7 +527,8 @@ def main() -> None:
 
     # --- "report performance" sub-command ---
     parser_performance = report_subcommands.add_parser(
-        "performance", help="Show investment performance (realized & unrealized gains/losses)."
+        "performance",
+        help="Show investment performance (realized & unrealized gains/losses).",
     )
     add_report_args(parser_performance)
 
@@ -533,9 +536,7 @@ def main() -> None:
     #                           COMMAND: "config"
     # --------------------------------------------------------------------------
 
-    parser_config = main_commands.add_parser(
-        "config", help="Manage CLI configuration."
-    )
+    parser_config = main_commands.add_parser("config", help="Manage CLI configuration.")
     config_subcommands = parser_config.add_subparsers(
         dest="config_action", required=True, help="Config commands"
     )
@@ -594,10 +595,22 @@ def main() -> None:
             success, message, details = check_paperless_connection(config)
 
             # Show config status
-            url_status = f"{GREEN}✓{RESET}" if details.get("url_configured") else f"{RED}✗{RESET}"
-            token_status = f"{GREEN}✓{RESET}" if details.get("token_configured") else f"{RED}✗{RESET}"
-            print(f"  {url_status} paperless_url: {config.get('paperless_url', '(not set)')}")
-            print(f"  {token_status} paperless_token: {'(configured)' if details.get('token_configured') else '(not set)'}")
+            url_status = (
+                f"{GREEN}✓{RESET}"
+                if details.get("url_configured")
+                else f"{RED}✗{RESET}"
+            )
+            token_status = (
+                f"{GREEN}✓{RESET}"
+                if details.get("token_configured")
+                else f"{RED}✗{RESET}"
+            )
+            print(
+                f"  {url_status} paperless_url: {config.get('paperless_url', '(not set)')}"
+            )
+            print(
+                f"  {token_status} paperless_token: {'(configured)' if details.get('token_configured') else '(not set)'}"
+            )
 
             # Show connection result
             if success:
@@ -609,7 +622,9 @@ def main() -> None:
             else:
                 print(f"\n  {RED}✗ {message}{RESET}")
                 if not details.get("url_configured"):
-                    print(f"\n  Run: dv config set paperless_url http://your-server:8000")
+                    print(
+                        f"\n  Run: dv config set paperless_url http://your-server:8000"
+                    )
                 if not details.get("token_configured"):
                     print(f"  Run: dv config set paperless_token your-api-token")
         return
@@ -686,12 +701,26 @@ def main() -> None:
             print("No transactions found.")
         else:
             # Get paperless URL from config for document links
-            paperless_url = config.get("paperless_url", "").rstrip('/')
+            paperless_url = config.get("paperless_url", "").rstrip("/")
 
-            print(f"{BOLD}{'ID':<5} {'Date':<12} {'Account':<15} {'Type':<10} {'Company':<20} {'Qty':<6} {'Unit':<10} {'Total':<12} {'Cost':<8} {'Docs'}{RESET}")
+            print(
+                f"{BOLD}{'ID':<5} {'Date':<12} {'Account':<15} {'Type':<10} {'Company':<20} {'Qty':<6} {'Unit':<10} {'Total':<12} {'Cost':<8} {'Docs'}{RESET}"
+            )
             print("-" * 115)
             for t in transactions:
-                tid, account, ttype, company, qty, unit, total, cost, date, linked, doc_ids = t
+                (
+                    tid,
+                    account,
+                    ttype,
+                    company,
+                    qty,
+                    unit,
+                    total,
+                    cost,
+                    date,
+                    linked,
+                    doc_ids,
+                ) = t
                 company_str = company or "-"
                 qty_str = str(qty) if qty else "-"
                 unit_str = format_cents(unit) if unit else "-"
@@ -700,13 +729,17 @@ def main() -> None:
 
                 # Format document links
                 if doc_ids and paperless_url:
-                    doc_urls = ", ".join(f"{paperless_url}/documents/{d}" for d in doc_ids.split(","))
+                    doc_urls = ", ".join(
+                        f"{paperless_url}/documents/{d}" for d in doc_ids.split(",")
+                    )
                 elif doc_ids:
                     doc_urls = doc_ids  # Just show IDs if no URL configured
                 else:
                     doc_urls = "-"
 
-                print(f"{tid:<5} {date:<12} {account:<15} {ttype:<10} {company_str:<20} {qty_str:<6} {unit_str:<10} {total_str:<12} {cost_str:<8} {doc_urls}")
+                print(
+                    f"{tid:<5} {date:<12} {account:<15} {ttype:<10} {company_str:<20} {qty_str:<6} {unit_str:<10} {total_str:<12} {cost_str:<8} {doc_urls}"
+                )
 
     # --------------------------------------------------------------------------
     #                           HANDLE: "add"
@@ -714,7 +747,7 @@ def main() -> None:
     elif args.command == "add":
         # ----- BUY -----
         if args.transaction_type == "buy":
-            account = get_or_prompt_account(cur, getattr(args, 'account', None))
+            account = get_or_prompt_account(cur, getattr(args, "account", None))
             if not account:
                 conn.close()
                 return
@@ -730,7 +763,11 @@ def main() -> None:
                 doc_ids, failed_docs = resolve_doc_args(args.doc, config)
 
             total_value = args.quantity * args.price
-            date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
+            date_str = (
+                args.date.strftime("%Y-%m-%d")
+                if isinstance(args.date, datetime)
+                else args.date
+            )
 
             print(f"\n{BOLD}Recording BUY transaction:{RESET}")
             print(f"  Account:  {account[1]}")
@@ -748,7 +785,15 @@ def main() -> None:
                     """INSERT INTO "transaction"
                        (account, company, type, quantity, unit_value, total_value, cost, date)
                        VALUES (?, ?, 'buy', ?, ?, ?, ?, ?)""",
-                    (account[0], company[0], args.quantity, args.price, total_value, args.cost, date_str)
+                    (
+                        account[0],
+                        company[0],
+                        args.quantity,
+                        args.price,
+                        total_value,
+                        args.cost,
+                        date_str,
+                    ),
                 )
                 conn.commit()
                 transaction_id = cur.lastrowid
@@ -758,18 +803,22 @@ def main() -> None:
                 if doc_ids:
                     insert_transaction_documents(cur, transaction_id, doc_ids)
                     conn.commit()
-                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+                    print(
+                        f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}"
+                    )
 
                 if failed_docs:
-                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    print(
+                        f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}"
+                    )
                     for f in failed_docs:
                         print(f"  - {f}")
-                    print(f"\nTo attach manually later, use:")
+                    print("\nTo attach manually later, use:")
                     print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- SELL -----
         elif args.transaction_type == "sell":
-            account = get_or_prompt_account(cur, getattr(args, 'account', None))
+            account = get_or_prompt_account(cur, getattr(args, "account", None))
             if not account:
                 conn.close()
                 return
@@ -785,7 +834,11 @@ def main() -> None:
                 doc_ids, failed_docs = resolve_doc_args(args.doc, config)
 
             total_value = args.quantity * args.price
-            date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
+            date_str = (
+                args.date.strftime("%Y-%m-%d")
+                if isinstance(args.date, datetime)
+                else args.date
+            )
 
             print(f"\n{BOLD}Recording SELL transaction:{RESET}")
             print(f"  Account:  {account[1]}")
@@ -803,7 +856,15 @@ def main() -> None:
                     """INSERT INTO "transaction"
                        (account, company, type, quantity, unit_value, total_value, cost, date)
                        VALUES (?, ?, 'sell', ?, ?, ?, ?, ?)""",
-                    (account[0], company[0], args.quantity, args.price, total_value, args.cost, date_str)
+                    (
+                        account[0],
+                        company[0],
+                        args.quantity,
+                        args.price,
+                        total_value,
+                        args.cost,
+                        date_str,
+                    ),
                 )
                 conn.commit()
                 transaction_id = cur.lastrowid
@@ -813,18 +874,22 @@ def main() -> None:
                 if doc_ids:
                     insert_transaction_documents(cur, transaction_id, doc_ids)
                     conn.commit()
-                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+                    print(
+                        f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}"
+                    )
 
                 if failed_docs:
-                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    print(
+                        f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}"
+                    )
                     for f in failed_docs:
                         print(f"  - {f}")
-                    print(f"\nTo attach manually later, use:")
+                    print("\nTo attach manually later, use:")
                     print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- DIVIDEND -----
         elif args.transaction_type == "dividend":
-            account = get_or_prompt_account(cur, getattr(args, 'account', None))
+            account = get_or_prompt_account(cur, getattr(args, "account", None))
             if not account:
                 conn.close()
                 return
@@ -839,7 +904,11 @@ def main() -> None:
             if args.doc:
                 doc_ids, failed_docs = resolve_doc_args(args.doc, config)
 
-            date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
+            date_str = (
+                args.date.strftime("%Y-%m-%d")
+                if isinstance(args.date, datetime)
+                else args.date
+            )
 
             print(f"\n{BOLD}Recording DIVIDEND transaction:{RESET}")
             print(f"  Account:  {account[1]}")
@@ -855,7 +924,7 @@ def main() -> None:
                     """INSERT INTO "transaction"
                        (account, company, type, total_value, cost, date)
                        VALUES (?, ?, 'dividend', ?, ?, ?)""",
-                    (account[0], company[0], args.amount, args.cost, date_str)
+                    (account[0], company[0], args.amount, args.cost, date_str),
                 )
                 conn.commit()
                 transaction_id = cur.lastrowid
@@ -865,18 +934,22 @@ def main() -> None:
                 if doc_ids:
                     insert_transaction_documents(cur, transaction_id, doc_ids)
                     conn.commit()
-                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+                    print(
+                        f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}"
+                    )
 
                 if failed_docs:
-                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    print(
+                        f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}"
+                    )
                     for f in failed_docs:
                         print(f"  - {f}")
-                    print(f"\nTo attach manually later, use:")
+                    print("\nTo attach manually later, use:")
                     print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- INTEREST -----
         elif args.transaction_type == "interest":
-            account = get_or_prompt_account(cur, getattr(args, 'account', None))
+            account = get_or_prompt_account(cur, getattr(args, "account", None))
             if not account:
                 conn.close()
                 return
@@ -886,7 +959,11 @@ def main() -> None:
             if args.doc:
                 doc_ids, failed_docs = resolve_doc_args(args.doc, config)
 
-            date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
+            date_str = (
+                args.date.strftime("%Y-%m-%d")
+                if isinstance(args.date, datetime)
+                else args.date
+            )
 
             print(f"\n{BOLD}Recording INTEREST transaction:{RESET}")
             print(f"  Account:  {account[1]}")
@@ -901,7 +978,7 @@ def main() -> None:
                     """INSERT INTO "transaction"
                        (account, type, total_value, cost, date)
                        VALUES (?, 'interest', ?, ?, ?)""",
-                    (account[0], args.amount, args.cost, date_str)
+                    (account[0], args.amount, args.cost, date_str),
                 )
                 conn.commit()
                 transaction_id = cur.lastrowid
@@ -911,18 +988,22 @@ def main() -> None:
                 if doc_ids:
                     insert_transaction_documents(cur, transaction_id, doc_ids)
                     conn.commit()
-                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+                    print(
+                        f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}"
+                    )
 
                 if failed_docs:
-                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    print(
+                        f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}"
+                    )
                     for f in failed_docs:
                         print(f"  - {f}")
-                    print(f"\nTo attach manually later, use:")
+                    print("\nTo attach manually later, use:")
                     print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- DEPOSIT -----
         elif args.transaction_type == "deposit":
-            account = get_or_prompt_account(cur, getattr(args, 'account', None))
+            account = get_or_prompt_account(cur, getattr(args, "account", None))
             if not account:
                 conn.close()
                 return
@@ -932,7 +1013,11 @@ def main() -> None:
             if args.doc:
                 doc_ids, failed_docs = resolve_doc_args(args.doc, config)
 
-            date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
+            date_str = (
+                args.date.strftime("%Y-%m-%d")
+                if isinstance(args.date, datetime)
+                else args.date
+            )
 
             print(f"\n{BOLD}Recording DEPOSIT transaction:{RESET}")
             print(f"  Account:  {account[1]}")
@@ -947,7 +1032,7 @@ def main() -> None:
                     """INSERT INTO "transaction"
                        (account, type, total_value, cost, date)
                        VALUES (?, 'deposit', ?, ?, ?)""",
-                    (account[0], args.amount, args.cost, date_str)
+                    (account[0], args.amount, args.cost, date_str),
                 )
                 conn.commit()
                 transaction_id = cur.lastrowid
@@ -957,18 +1042,22 @@ def main() -> None:
                 if doc_ids:
                     insert_transaction_documents(cur, transaction_id, doc_ids)
                     conn.commit()
-                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+                    print(
+                        f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}"
+                    )
 
                 if failed_docs:
-                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    print(
+                        f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}"
+                    )
                     for f in failed_docs:
                         print(f"  - {f}")
-                    print(f"\nTo attach manually later, use:")
+                    print("\nTo attach manually later, use:")
                     print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- WITHDRAWAL -----
         elif args.transaction_type == "withdrawal":
-            account = get_or_prompt_account(cur, getattr(args, 'account', None))
+            account = get_or_prompt_account(cur, getattr(args, "account", None))
             if not account:
                 conn.close()
                 return
@@ -978,7 +1067,11 @@ def main() -> None:
             if args.doc:
                 doc_ids, failed_docs = resolve_doc_args(args.doc, config)
 
-            date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
+            date_str = (
+                args.date.strftime("%Y-%m-%d")
+                if isinstance(args.date, datetime)
+                else args.date
+            )
 
             print(f"\n{BOLD}Recording WITHDRAWAL transaction:{RESET}")
             print(f"  Account:  {account[1]}")
@@ -993,7 +1086,7 @@ def main() -> None:
                     """INSERT INTO "transaction"
                        (account, type, total_value, cost, date)
                        VALUES (?, 'withdrawal', ?, ?, ?)""",
-                    (account[0], args.amount, args.cost, date_str)
+                    (account[0], args.amount, args.cost, date_str),
                 )
                 conn.commit()
                 transaction_id = cur.lastrowid
@@ -1003,19 +1096,26 @@ def main() -> None:
                 if doc_ids:
                     insert_transaction_documents(cur, transaction_id, doc_ids)
                     conn.commit()
-                    print(f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}")
+                    print(
+                        f"Linked {len(doc_ids)} document(s) to transaction {transaction_id}"
+                    )
 
                 if failed_docs:
-                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    print(
+                        f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}"
+                    )
                     for f in failed_docs:
                         print(f"  - {f}")
-                    print(f"\nTo attach manually later, use:")
+                    print("\nTo attach manually later, use:")
                     print(f"  dv doc add {transaction_id} <paperless_doc_id>")
 
         # ----- TRANSFER -----
         elif args.transaction_type == "transfer":
             # Get source account
-            cur.execute("SELECT id, name FROM account WHERE name LIKE ?", (f"%{args.from_account}%",))
+            cur.execute(
+                "SELECT id, name FROM account WHERE name LIKE ?",
+                (f"%{args.from_account}%",),
+            )
             from_results = cur.fetchall()
             if not from_results:
                 print(f"{RED}Source account '{args.from_account}' not found.{RESET}")
@@ -1035,7 +1135,10 @@ def main() -> None:
                 from_account = from_results[0]
 
             # Get destination account
-            cur.execute("SELECT id, name FROM account WHERE name LIKE ?", (f"%{args.to_account}%",))
+            cur.execute(
+                "SELECT id, name FROM account WHERE name LIKE ?",
+                (f"%{args.to_account}%",),
+            )
             to_results = cur.fetchall()
             if not to_results:
                 print(f"{RED}Destination account '{args.to_account}' not found.{RESET}")
@@ -1064,7 +1167,11 @@ def main() -> None:
             if args.doc:
                 doc_ids, failed_docs = resolve_doc_args(args.doc, config)
 
-            date_str = args.date.strftime("%Y-%m-%d") if isinstance(args.date, datetime) else args.date
+            date_str = (
+                args.date.strftime("%Y-%m-%d")
+                if isinstance(args.date, datetime)
+                else args.date
+            )
 
             print(f"\n{BOLD}Recording TRANSFER transaction:{RESET}")
             print(f"  From:     {from_account[1]}")
@@ -1081,7 +1188,7 @@ def main() -> None:
                     """INSERT INTO "transaction"
                        (account, type, total_value, cost, date)
                        VALUES (?, 'transfer', ?, ?, ?)""",
-                    (from_account[0], -args.amount, args.cost, date_str)
+                    (from_account[0], -args.amount, args.cost, date_str),
                 )
                 outgoing_id = cur.lastrowid
 
@@ -1090,30 +1197,36 @@ def main() -> None:
                     """INSERT INTO "transaction"
                        (account, type, total_value, cost, date, linked_transaction)
                        VALUES (?, 'transfer', ?, 0, ?, ?)""",
-                    (to_account[0], args.amount, date_str, outgoing_id)
+                    (to_account[0], args.amount, date_str, outgoing_id),
                 )
                 incoming_id = cur.lastrowid
 
                 # Link the outgoing transaction to the incoming one
                 cur.execute(
                     """UPDATE "transaction" SET linked_transaction = ? WHERE id = ?""",
-                    (incoming_id, outgoing_id)
+                    (incoming_id, outgoing_id),
                 )
 
                 conn.commit()
-                print(f"{GREEN}Transfer recorded (IDs: {outgoing_id} <-> {incoming_id}).{RESET}")
+                print(
+                    f"{GREEN}Transfer recorded (IDs: {outgoing_id} <-> {incoming_id}).{RESET}"
+                )
 
                 # Link documents to the outgoing transaction
                 if doc_ids:
                     insert_transaction_documents(cur, outgoing_id, doc_ids)
                     conn.commit()
-                    print(f"Linked {len(doc_ids)} document(s) to transaction {outgoing_id}")
+                    print(
+                        f"Linked {len(doc_ids)} document(s) to transaction {outgoing_id}"
+                    )
 
                 if failed_docs:
-                    print(f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}")
+                    print(
+                        f"\n{YELLOW}Warning: {len(failed_docs)} document(s) could not be linked:{RESET}"
+                    )
                     for f in failed_docs:
                         print(f"  - {f}")
-                    print(f"\nTo attach manually later, use:")
+                    print("\nTo attach manually later, use:")
                     print(f"  dv doc add {outgoing_id} <paperless_doc_id>")
 
     # --------------------------------------------------------------------------
@@ -1171,9 +1284,13 @@ def main() -> None:
                 net = balance + fees
                 total_balance += balance
                 total_fees += fees
-                print(f"  {name:<20} {format_cents(net):>15}  (fees: {format_cents(abs(fees))})")
+                print(
+                    f"  {name:<20} {format_cents(net):>15}  (fees: {format_cents(abs(fees))})"
+                )
             print("-" * 50)
-            print(f"  {'TOTAL':<20} {format_cents(total_balance + total_fees):>15}  (fees: {format_cents(abs(total_fees))})")
+            print(
+                f"  {'TOTAL':<20} {format_cents(total_balance + total_fees):>15}  (fees: {format_cents(abs(total_fees))})"
+            )
 
         # ----- CASHFLOW REPORT -----
         elif args.report_type == "cashflow":
@@ -1195,7 +1312,9 @@ def main() -> None:
             results = cur.fetchall()
 
             print(f"\n{BOLD}Cash Flow Report:{RESET}")
-            print(f"{'Account':<20} {'Deposits':>12} {'Withdrawals':>12} {'Dividends':>12} {'Interest':>12} {'Fees':>12} {'Net':>12}")
+            print(
+                f"{'Account':<20} {'Deposits':>12} {'Withdrawals':>12} {'Dividends':>12} {'Interest':>12} {'Fees':>12} {'Net':>12}"
+            )
             print("-" * 92)
 
             totals = [0, 0, 0, 0, 0]
@@ -1206,11 +1325,15 @@ def main() -> None:
                 totals[2] += dividends
                 totals[3] += interest
                 totals[4] += fees
-                print(f"{name:<20} {format_cents(deposits):>12} {format_cents(withdrawals):>12} {format_cents(dividends):>12} {format_cents(interest):>12} {format_cents(fees):>12} {format_cents(net):>12}")
+                print(
+                    f"{name:<20} {format_cents(deposits):>12} {format_cents(withdrawals):>12} {format_cents(dividends):>12} {format_cents(interest):>12} {format_cents(fees):>12} {format_cents(net):>12}"
+                )
 
             print("-" * 92)
             net_total = totals[0] - totals[1] + totals[2] + totals[3] - totals[4]
-            print(f"{'TOTAL':<20} {format_cents(totals[0]):>12} {format_cents(totals[1]):>12} {format_cents(totals[2]):>12} {format_cents(totals[3]):>12} {format_cents(totals[4]):>12} {format_cents(net_total):>12}")
+            print(
+                f"{'TOTAL':<20} {format_cents(totals[0]):>12} {format_cents(totals[1]):>12} {format_cents(totals[2]):>12} {format_cents(totals[3]):>12} {format_cents(totals[4]):>12} {format_cents(net_total):>12}"
+            )
 
         # ----- HOLDINGS REPORT -----
         elif args.report_type == "holdings":
@@ -1237,11 +1360,20 @@ def main() -> None:
                 print("\nNo holdings found.")
             else:
                 print(f"\n{BOLD}Portfolio Holdings:{RESET}")
-                print(f"{'Account':<20} {'Company':<25} {'Shares':>8} {'Avg Cost':>12} {'Total Cost':>14}")
+                print(
+                    f"{'Account':<20} {'Company':<25} {'Shares':>8} {'Avg Cost':>12} {'Total Cost':>14}"
+                )
                 print("-" * 85)
 
                 current_account = None
-                for account, company, bought, sold, total_cost, total_proceeds in results:
+                for (
+                    account,
+                    company,
+                    bought,
+                    sold,
+                    total_cost,
+                    total_proceeds,
+                ) in results:
                     shares = bought - sold
                     if shares > 0:
                         # Calculate average cost (cost basis of remaining shares)
@@ -1253,7 +1385,9 @@ def main() -> None:
                                 print()
                             current_account = account
 
-                        print(f"{account:<20} {company:<25} {shares:>8} {format_cents(avg_cost):>12} {format_cents(remaining_cost):>14}")
+                        print(
+                            f"{account:<20} {company:<25} {shares:>8} {format_cents(avg_cost):>12} {format_cents(remaining_cost):>14}"
+                        )
 
         # ----- PERFORMANCE REPORT -----
         elif args.report_type == "performance":
@@ -1281,14 +1415,24 @@ def main() -> None:
                 print("\nNo investment transactions found.")
             else:
                 print(f"\n{BOLD}Investment Performance:{RESET}")
-                print(f"{'Company':<25} {'Bought':>8} {'Sold':>8} {'Buy Value':>12} {'Sell Value':>12} {'Realized G/L':>14} {'Dividends':>12}")
+                print(
+                    f"{'Company':<25} {'Bought':>8} {'Sold':>8} {'Buy Value':>12} {'Sell Value':>12} {'Realized G/L':>14} {'Dividends':>12}"
+                )
                 print("-" * 105)
 
                 total_realized = 0
                 total_dividends = 0
                 total_fees = 0
 
-                for company, bought, sold, buy_value, sell_value, dividends, fees in results:
+                for (
+                    company,
+                    bought,
+                    sold,
+                    buy_value,
+                    sell_value,
+                    dividends,
+                    fees,
+                ) in results:
                     # Calculate realized gain/loss using average cost method
                     if bought > 0 and sold > 0:
                         avg_cost_per_share = buy_value // bought
@@ -1302,20 +1446,36 @@ def main() -> None:
                     total_fees += fees
 
                     realized_str = format_cents_colored(realized_gain)
-                    print(f"{company:<25} {bought:>8} {sold:>8} {format_cents(buy_value):>12} {format_cents(sell_value):>12} {realized_str:>23} {format_cents(dividends):>12}")
+                    print(
+                        f"{company:<25} {bought:>8} {sold:>8} {format_cents(buy_value):>12} {format_cents(sell_value):>12} {realized_str:>23} {format_cents(dividends):>12}"
+                    )
 
                 print("-" * 105)
-                print(f"\n  {BOLD}Realized Gains/Losses:{RESET}  {format_cents_colored(total_realized)}")
-                print(f"  {BOLD}Total Dividends:{RESET}        {format_cents(total_dividends)}")
-                print(f"  {BOLD}Total Fees:{RESET}             {format_cents(total_fees)}")
-                print(f"  {BOLD}Net Return:{RESET}             {format_cents_colored(total_realized + total_dividends - total_fees)}")
-                print(f"\n  {YELLOW}Note: Unrealized gains/losses require current market prices (not yet implemented){RESET}")
+                print(
+                    f"\n  {BOLD}Realized Gains/Losses:{RESET}  {format_cents_colored(total_realized)}"
+                )
+                print(
+                    f"  {BOLD}Total Dividends:{RESET}        {format_cents(total_dividends)}"
+                )
+                print(
+                    f"  {BOLD}Total Fees:{RESET}             {format_cents(total_fees)}"
+                )
+                print(
+                    f"  {BOLD}Net Return:{RESET}             {format_cents_colored(total_realized + total_dividends - total_fees)}"
+                )
+                print(
+                    f"\n  {YELLOW}Note: Unrealized gains/losses require current market prices (not yet implemented){RESET}"
+                )
 
         # ----- SUMMARY REPORT -----
         elif args.report_type == "summary":
-            print(f"\n{BOLD}═══════════════════════════════════════════════════════════════{RESET}")
+            print(
+                f"\n{BOLD}═══════════════════════════════════════════════════════════════{RESET}"
+            )
             print(f"{BOLD}                     INVESTMENT SUMMARY{RESET}")
-            print(f"{BOLD}═══════════════════════════════════════════════════════════════{RESET}")
+            print(
+                f"{BOLD}═══════════════════════════════════════════════════════════════{RESET}"
+            )
 
             # Cash balances
             query = f"""
@@ -1408,17 +1568,25 @@ def main() -> None:
             print(f"    Total Income:          {format_cents(income):>14}")
 
             print(f"\n  {BOLD}Performance:{RESET}")
-            print(f"    Realized Gains/Losses: {format_cents_colored(realized_total):>23}")
+            print(
+                f"    Realized Gains/Losses: {format_cents_colored(realized_total):>23}"
+            )
             print(f"    Unrealized G/L:        {YELLOW}{'(needs prices)':>14}{RESET}")
 
             print(f"\n  {BOLD}Current Position:{RESET}")
-            print(f"    Cash Balance:          {format_cents(cash_balance - total_fees):>14}")
+            print(
+                f"    Cash Balance:          {format_cents(cash_balance - total_fees):>14}"
+            )
             print(f"    Holdings (at cost):    {format_cents(holdings_at_cost):>14}")
             print(f"    Total Fees Paid:       {format_cents(total_fees):>14}")
 
             total_value = cash_balance - total_fees + holdings_at_cost
-            print(f"\n  {BOLD}Total Portfolio Value:     {format_cents(total_value):>14}{RESET}")
-            print(f"{BOLD}═══════════════════════════════════════════════════════════════{RESET}\n")
+            print(
+                f"\n  {BOLD}Total Portfolio Value:     {format_cents(total_value):>14}{RESET}"
+            )
+            print(
+                f"{BOLD}═══════════════════════════════════════════════════════════════{RESET}\n"
+            )
 
     conn.close()
 
