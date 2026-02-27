@@ -1,0 +1,43 @@
+direction: right
+
+accounts: {
+  shape: sql_table
+  account_id: int {constraint: primary_key}
+  display_name: text
+}
+
+transaction_categories: {
+  shape: sql_table
+  category_id: text {constraint: primary_key}
+  display_name: text
+  default_direction: int
+}
+
+securities: {
+  shape: sql_table
+  security_id: int {constraint: primary_key}
+  ticker: text
+}
+
+counterparties: {
+  shape: sql_table
+  counterparty_id: int {constraint: primary_key}
+  name: text
+}
+
+transactions: {
+  shape: sql_table
+  transaction_id: int {constraint: primary_key}
+  account_id: int {constraint: foreign_key}
+  category_id: text {constraint: foreign_key}
+  security_id: int {constraint: foreign_key}
+  counterparty_id: int {constraint: foreign_key}
+  amount: numeric
+  quantity: numeric
+  unit_price: numeric
+}
+
+transactions.account_id -> accounts.account_id
+transactions.category_id -> transaction_categories.category_id
+transactions.security_id -> securities.security_id
+transactions.counterparty_id -> counterparties.counterparty_id

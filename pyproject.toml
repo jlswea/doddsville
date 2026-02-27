@@ -1,0 +1,16 @@
+[project]
+name = "doddsville"
+version = "0.0.3"
+description = "CLI for managing stock transactions and portfolio analysis"
+requires-python = ">=3.10"
+
+[project.scripts]
+dv = "cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["cli", "formatting", "config", "paperless", "db", "ui", "migrations"]
+packages = ["parsers", "commands", "sensors"]

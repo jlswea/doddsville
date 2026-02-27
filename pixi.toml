@@ -1,0 +1,24 @@
+[workspace]
+name = "doddsville"
+channels = ["conda-forge"]
+platforms = ["osx-arm64"]
+
+[dependencies]
+python = "==3.10.19"
+beautifulsoup4 = "==4.14.3"
+lxml = "==6.0.2"
+numpy = "==2.2.6"
+pandas = "==2.3.3"
+textual = "==6.11.0"
+rich = "==14.2.0"
+pytest = "==9.0.2"
+pip = "==25.1.1"
+requests = "==2.32.3"
+
+[pypi-dependencies]
+pdfplumber = ">=0.10.0"
+pyyaml = ">=6.0"
+
+[tasks]
+install-cli = "pip install -e . --quiet"
+dv = { cmd = "dv", depends-on = ["install-cli"] }

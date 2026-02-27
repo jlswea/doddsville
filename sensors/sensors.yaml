@@ -1,0 +1,22 @@
+tagesschau:
+  enabled: true
+  indices:
+    - name: DAX
+      url: https://www.tagesschau.de/wirtschaft/boersenkurse/dax-index-846900/
+    - name: MDAX
+      url: https://www.tagesschau.de/wirtschaft/boersenkurse/mdax-index-846741/
+    - name: TecDax
+      url: https://www.tagesschau.de/wirtschaft/boersenkurse/tecdax-index-720327/
+    - name: SDax
+      url: https://www.tagesschau.de/wirtschaft/boersenkurse/sdax-index-965338/
+    - name: Dow Jones
+      url: https://www.tagesschau.de/wirtschaft/boersenkurse/47776/
+    - name: S&P 500
+      url: https://www.tagesschau.de/wirtschaft/boersenkurse/49543/
+    - name: Nasdaq
+      url: https://www.tagesschau.de/wirtschaft/boersenkurse/49137/
+
+justetf:
+  enabled: true
+  urls:
+    - https://www.justetf.com/de/etf-list-overview.html
