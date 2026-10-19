@@ -102,10 +102,25 @@ const top_help =
 
 // ------------------------------------------------------------------- main
 
-pub fn main(init: std.process.Init) !u8 {
-    const a = init.arena.allocator();
-    const io = init.io;
-    const argv = try init.minimal.args.toSlice(a);
+/// TigerStyle: all memory comes from this one static budget. Nothing is
+/// allocated from the OS after startup; exceeding it is an error, not growth.
+const memory_budget = 32 * 1024 * 1024;
+var memory: [memory_budget]u8 = undefined;
+
+pub fn main(init: std.process.Init.Minimal) !u8 {
+    var fba: std.heap.FixedBufferAllocator = .init(&memory);
+    const a = fba.allocator();
+
+    // dv never uses async/concurrent Io, so the Io needs no allocator of its own.
+    var threaded: Io.Threaded = .init(.failing, .{
+        .argv0 = .init(init.args),
+        .environ = init.environ,
+    });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var environ_map = try std.process.Environ.createMap(init.environ, a);
+    const argv = try init.args.toSlice(a);
 
     var out_buf: [8192]u8 = undefined;
     var out_file: Io.File.Writer = .init(.stdout(), io, &out_buf);
@@ -117,7 +132,7 @@ pub fn main(init: std.process.Init) !u8 {
         .io = io,
         .out = &out_file.interface,
         .in = &in_file.interface,
-        .environ = init.environ_map,
+        .environ = &environ_map,
         .config = undefined,
     };
 
@@ -128,6 +143,11 @@ pub fn main(init: std.process.Init) !u8 {
             break :blk 2;
         },
         error.HelpShown => 0,
+        error.OutOfMemory => blk: {
+            app.out.flush() catch {};
+            std.debug.print("dv: error: memory budget of {d} MiB exhausted\n", .{memory_budget / (1024 * 1024)});
+            break :blk 1;
+        },
         error.Reported => 1,
         else => blk: {
             app.out.flush() catch {};
