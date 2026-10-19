@@ -1,0 +1,127 @@
+//! Port of migrations.py: schema migrations keyed on PRAGMA user_version.
+//! Each step is idempotent, so fresh and already-migrated databases both work.
+
+const std = @import("std");
+const sqlite = @import("sqlite.zig");
+
+fn version(db: sqlite.Db) !i64 {
+    var st = try db.prepare("PRAGMA user_version");
+    defer st.finalize();
+    _ = try st.step();
+    return st.int(0);
+}
+
+fn hasColumn(db: sqlite.Db, table: []const u8, column: []const u8) !bool {
+    var buf: [128]u8 = undefined;
+    const sql = try std.fmt.bufPrint(&buf, "PRAGMA table_info(\"{s}\")", .{table});
+    var st = try db.prepare(sql);
+    defer st.finalize();
+    while (try st.step()) {
+        var name_buf: [256]u8 = undefined;
+        var fba: std.heap.FixedBufferAllocator = .init(&name_buf);
+        const name = (try st.text(fba.allocator(), 1)) orelse continue;
+        if (std.mem.eql(u8, name, column)) return true;
+    }
+    return false;
+}
+
+fn m001(db: sqlite.Db) !void {
+    try db.exec(
+        \\CREATE TABLE IF NOT EXISTS "index" (
+        \\    id INTEGER PRIMARY KEY ASC,
+        \\    name TEXT,
+        \\    url TEXT
+        \\);
+        \\CREATE TABLE IF NOT EXISTS company (
+        \\    id INTEGER PRIMARY KEY ASC,
+        \\    isin TEXT,
+        \\    name TEXT,
+        \\    url TEXT
+        \\);
+        \\CREATE TABLE IF NOT EXISTS raw_html (
+        \\    id INTEGER PRIMARY KEY ASC,
+        \\    com INTEGER,
+        \\    html TEXT,
+        \\    timestamp TEXT,
+        \\    FOREIGN KEY (com) REFERENCES company (id) ON DELETE CASCADE
+        \\);
+        \\CREATE TABLE IF NOT EXISTS account (
+        \\    id INTEGER PRIMARY KEY ASC,
+        \\    name TEXT NOT NULL UNIQUE
+        \\);
+        \\CREATE TABLE IF NOT EXISTS "transaction" (
+        \\    id INTEGER PRIMARY KEY ASC,
+        \\    account INTEGER NOT NULL REFERENCES account (id),
+        \\    company INTEGER REFERENCES company (id),
+        \\    type TEXT CHECK (type IN (
+        \\        'buy',
+        \\        'sell',
+        \\        'dividend',
+        \\        'interest',
+        \\        'deposit',
+        \\        'withdrawal',
+        \\        'transfer'
+        \\    )),
+        \\    total_value INTEGER,
+        \\    unit_value INTEGER,
+        \\    quantity INTEGER,
+        \\    cost INTEGER,
+        \\    date DATE NOT NULL,
+        \\    linked_transaction INTEGER REFERENCES "transaction" (id),
+        \\    FOREIGN KEY (company) REFERENCES company (id) ON DELETE CASCADE
+        \\);
+    );
+}
+
+fn m002(db: sqlite.Db) !void {
+    try db.exec(
+        \\CREATE TABLE IF NOT EXISTS transaction_document (
+        \\    id INTEGER PRIMARY KEY ASC,
+        \\    transaction_id INTEGER NOT NULL REFERENCES "transaction" (id) ON DELETE CASCADE,
+        \\    paperless_id INTEGER NOT NULL,
+        \\    UNIQUE(transaction_id, paperless_id)
+        \\);
+    );
+}
+
+fn m003(db: sqlite.Db) !void {
+    if (!try hasColumn(db, "transaction", "currency"))
+        try db.exec("ALTER TABLE \"transaction\" ADD COLUMN currency TEXT DEFAULT 'EUR'");
+    if (!try hasColumn(db, "transaction", "exchange_rate"))
+        try db.exec("ALTER TABLE \"transaction\" ADD COLUMN exchange_rate REAL DEFAULT 1.0");
+}
+
+fn m004(db: sqlite.Db) !void {
+    try db.exec("ALTER TABLE company RENAME TO security");
+    if (!try hasColumn(db, "security", "type"))
+        try db.exec("ALTER TABLE security ADD COLUMN type TEXT DEFAULT 'stock'");
+    try db.exec("ALTER TABLE \"transaction\" RENAME COLUMN company TO security");
+    try db.exec("DROP TABLE IF EXISTS raw_html");
+    try db.exec("DROP TABLE IF EXISTS \"index\"");
+}
+
+const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004 };
+
+pub fn run(db: sqlite.Db) !void {
+    const current = try version(db);
+    var i: usize = @intCast(current);
+    while (i < steps.len) : (i += 1) {
+        try db.exec("BEGIN");
+        errdefer db.exec("ROLLBACK") catch {};
+        try steps[i](db);
+        var buf: [64]u8 = undefined;
+        try db.exec(try std.fmt.bufPrintSentinel(&buf, "PRAGMA user_version = {d}", .{i + 1}, 0));
+        try db.exec("COMMIT");
+    }
+}
+
+test "fresh database migrates to the current schema" {
+    const db = try sqlite.Db.open(":memory:");
+    defer db.close();
+    try run(db);
+    try std.testing.expectEqual(@as(i64, 4), try version(db));
+    try std.testing.expect(try hasColumn(db, "transaction", "security"));
+    try std.testing.expect(try hasColumn(db, "transaction", "exchange_rate"));
+    try std.testing.expect(try hasColumn(db, "security", "type"));
+    try run(db); // idempotent
+}
