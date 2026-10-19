@@ -1,5 +1,66 @@
 # Doddsville
 
+`dv` is being ported from Python to **Zig 0.17**. The Zig binary covers the day-to-day
+commands; `import` (PDF/LLM parsing), `sensor` and the Textual TUI still run on the Python
+CLI until they are ported. Both read and write the same `data.db`.
+
+| Command | Zig `dv` | Python `cli.py` |
+| --- | --- | --- |
+| `account`, `add`, `list`, `edit`, `report`, `config` | ✅ | ✅ |
+| `doc add` / `doc edit` (Paperless) | ✅ | ✅ |
+| `import` (PDF + Ollama) | – (prints a pointer to Python) | ✅ |
+| `sensor`, TUI | – | ✅ |
+
+## Zig CLI
+
+### Build
+
+```bash
+brew install zig          # needs 0.17.x
+zig build                 # debug build -> zig-out/bin/dv
+zig build -Doptimize=ReleaseSafe   # optimised, still bounds-checked (~3 MB)
+zig build test            # unit tests
+zig build run -- report summary    # run without installing
+```
+
+SQLite (the official amalgamation) is a `build.zig.zon` dependency, downloaded on the
+first build and compiled into the binary, so there are no system dependencies. To
+upgrade, point `zig fetch` at a newer zip from https://sqlite.org/download.html:
+
+```bash
+zig fetch --save=sqlite https://www.sqlite.org/2025/sqlite-amalgamation-3500400.zip
+```
+
+Put the binary on your PATH, e.g. `ln -s "$PWD/zig-out/bin/dv" ~/.local/bin/dv`.
+Like the Python CLI, `dv` reads `dv.conf` and `data.db` from the **current directory**
+(override with `--db`), and Paperless credentials from `DV_PAPERLESS_URL` /
+`DV_PAPERLESS_TOKEN`.
+
+### Layout
+
+```
+build.zig, build.zig.zon
+src/
+├── main.zig         entry point: argument specs + dispatch (was cli.py)
+├── args.zig         small argparse replacement
+├── App.zig          per-run context: arena, I/O, config, db, input()
+├── Config.zig       dv.conf + env vars (config.py)
+├── sqlite.zig       hand-written SQLite binding (@cImport is gone in 0.17)
+├── migrations.zig   PRAGMA user_version migrations (migrations.py)
+├── format.zig       money/date parsing + formatting (formatting.py)
+├── lookup.zig       account/security resolution (db.py)
+├── paperless.zig    paperless-ngx API via std.http.Client (paperless.py)
+├── ui.zig           interactive editors (ui.py, edit parts)
+└── commands/        account, add, list, edit, report, doc, config
+```
+
+Intentional differences: `dv list` shows `-` instead of `None` for cash transactions;
+`dv --version` reports `doddsville@0.1.0`.
+
+---
+
+## Python CLI (legacy, still needed for import/sensor/TUI)
+
 ## Setup
 
 ### 1. Install Dependencies
