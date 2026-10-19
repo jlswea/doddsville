@@ -19,32 +19,26 @@ const Row = struct {
     exchange_rate: f64,
 };
 
+// Binding NULL disables a filter.
+const rows_sql =
+    \\SELECT t.id, a.name, t.type, s.name, t.quantity, t.unit_value, t.total_value,
+    \\       t.cost, t.date,
+    \\       (SELECT GROUP_CONCAT(paperless_id) FROM transaction_document WHERE transaction_id = t.id),
+    \\       t.currency, t.exchange_rate
+    \\FROM "transaction" t
+    \\JOIN account a ON t.account = a.id
+    \\LEFT JOIN security s ON t.security = s.id
+    \\WHERE (?1 IS NULL OR a.name LIKE ?1) AND (?2 IS NULL OR t.type = ?2)
+    \\ORDER BY t.date DESC, t.id DESC
+;
+
 pub fn run(app: *App, account: ?[]const u8, txn_type: ?[]const u8) !void {
     const a = app.a;
-    var sql: std.ArrayList(u8) = .empty;
-    try sql.appendSlice(a,
-        \\SELECT t.id, a.name, t.type, s.name, t.quantity, t.unit_value, t.total_value,
-        \\       t.cost, t.date, t.linked_transaction,
-        \\       (SELECT GROUP_CONCAT(paperless_id) FROM transaction_document WHERE transaction_id = t.id),
-        \\       t.currency, t.exchange_rate
-        \\FROM "transaction" t
-        \\JOIN account a ON t.account = a.id
-        \\LEFT JOIN security s ON t.security = s.id
-    );
-    if (account != null or txn_type != null) try sql.appendSlice(a, " WHERE ");
-    if (account != null) try sql.appendSlice(a, "a.name LIKE ?");
-    if (account != null and txn_type != null) try sql.appendSlice(a, " AND ");
-    if (txn_type != null) try sql.appendSlice(a, "t.type = ?");
-    try sql.appendSlice(a, " ORDER BY t.date DESC, t.id DESC");
+    const pattern: ?[]const u8 = if (account) |acc| try app.fmt("%{s}%", .{acc}) else null;
 
-    var st = try app.db.prepare(sql.items);
+    var st = try app.db.prepare(rows_sql);
     defer st.finalize();
-    var idx: c_int = 1;
-    if (account) |acc| {
-        try st.bindOne(idx, try app.fmt("%{s}%", .{acc}));
-        idx += 1;
-    }
-    if (txn_type) |t| try st.bindOne(idx, t);
+    try st.bindAll(.{ pattern, txn_type });
 
     var rows: std.ArrayList(Row) = .empty;
     while (try st.step()) try rows.append(a, .{
@@ -57,10 +51,10 @@ pub fn run(app: *App, account: ?[]const u8, txn_type: ?[]const u8) !void {
         .total = st.optInt(6),
         .cost = st.optInt(7),
         .date = (try st.text(a, 8)) orelse "",
-        .doc_ids = try st.text(a, 10),
-        .currency = (try st.text(a, 11)) orelse "EUR",
+        .doc_ids = try st.text(a, 9),
+        .currency = (try st.text(a, 10)) orelse "EUR",
         .exchange_rate = blk: {
-            const r = st.optFloat(12) orelse 1.0;
+            const r = st.optFloat(11) orelse 1.0;
             break :blk if (r == 0) 1.0 else r; // Python: `exchange_rate or 1.0`
         },
     });
