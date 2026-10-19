@@ -155,6 +155,14 @@ pub const Stmt = struct {
         return if (st.isNull(col)) null else st.float(col);
     }
 
+    /// Valid only until the next `step`/`finalize`; use `text` to keep it.
+    pub fn textRef(st: *Stmt, col: c_int) ?[]const u8 {
+        if (st.isNull(col)) return null;
+        const p = sqlite3_column_text(st.handle, col) orelse return null;
+        const n: usize = @intCast(sqlite3_column_bytes(st.handle, col));
+        return p[0..n];
+    }
+
     /// Text is copied into `a` because SQLite's buffer dies on the next step.
     pub fn text(st: *Stmt, a: std.mem.Allocator, col: c_int) Error!?[]const u8 {
         if (st.isNull(col)) return null;
