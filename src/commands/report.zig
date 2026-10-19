@@ -14,6 +14,9 @@ pub const Filter = struct {
     to: ?[]const u8 = null,
 };
 
+// total_value is stored in the transaction's currency; cost is already EUR.
+const total_eur = "CAST(ROUND(t.total_value * COALESCE(NULLIF(t.exchange_rate, 0), 1.0)) AS INTEGER)";
+
 const Ctx = struct {
     app: *App,
     date_filter: []const u8,
@@ -24,7 +27,8 @@ const Ctx = struct {
     /// bind date params first, then the account param — same order as Python.
     fn query(c: Ctx, comptime template: []const u8) !sqlite.Stmt {
         const a = c.app.a;
-        const s1 = try std.mem.replaceOwned(u8, a, template, "{date_filter}", c.date_filter);
+        const s0 = try std.mem.replaceOwned(u8, a, template, "{total_eur}", total_eur);
+        const s1 = try std.mem.replaceOwned(u8, a, s0, "{date_filter}", c.date_filter);
         const sql = try std.mem.replaceOwned(u8, a, s1, "{account_filter}", c.account_filter);
         var st = try c.app.db.prepare(sql);
         errdefer st.finalize();
@@ -76,13 +80,13 @@ fn balance(c: Ctx) !void {
         \\SELECT
         \\    a.name,
         \\    COALESCE(SUM(CASE
-        \\        WHEN t.type = 'deposit' THEN t.total_value
-        \\        WHEN t.type = 'withdrawal' THEN -t.total_value
-        \\        WHEN t.type = 'interest' THEN t.total_value
-        \\        WHEN t.type = 'dividend' THEN t.total_value
-        \\        WHEN t.type = 'buy' THEN -t.total_value
-        \\        WHEN t.type = 'sell' THEN t.total_value
-        \\        WHEN t.type = 'transfer' THEN t.total_value
+        \\        WHEN t.type = 'deposit' THEN {total_eur}
+        \\        WHEN t.type = 'withdrawal' THEN -{total_eur}
+        \\        WHEN t.type = 'interest' THEN {total_eur}
+        \\        WHEN t.type = 'dividend' THEN {total_eur}
+        \\        WHEN t.type = 'buy' THEN -{total_eur}
+        \\        WHEN t.type = 'sell' THEN {total_eur}
+        \\        WHEN t.type = 'transfer' THEN {total_eur}
         \\        ELSE 0
         \\    END), 0) as cash_balance,
         \\    COALESCE(SUM(CASE WHEN t.cost IS NOT NULL THEN -t.cost ELSE 0 END), 0) as total_fees
@@ -115,10 +119,10 @@ fn cashflow(c: Ctx) !void {
     var st = try c.query(
         \\SELECT
         \\    a.name,
-        \\    COALESCE(SUM(CASE WHEN t.type = 'deposit' THEN t.total_value ELSE 0 END), 0) as deposits,
-        \\    COALESCE(SUM(CASE WHEN t.type = 'withdrawal' THEN t.total_value ELSE 0 END), 0) as withdrawals,
-        \\    COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.total_value ELSE 0 END), 0) as dividends,
-        \\    COALESCE(SUM(CASE WHEN t.type = 'interest' THEN t.total_value ELSE 0 END), 0) as interest,
+        \\    COALESCE(SUM(CASE WHEN t.type = 'deposit' THEN {total_eur} ELSE 0 END), 0) as deposits,
+        \\    COALESCE(SUM(CASE WHEN t.type = 'withdrawal' THEN {total_eur} ELSE 0 END), 0) as withdrawals,
+        \\    COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN {total_eur} ELSE 0 END), 0) as dividends,
+        \\    COALESCE(SUM(CASE WHEN t.type = 'interest' THEN {total_eur} ELSE 0 END), 0) as interest,
         \\    COALESCE(SUM(CASE WHEN t.cost IS NOT NULL THEN t.cost ELSE 0 END), 0) as fees
         \\FROM account a
         \\LEFT JOIN "transaction" t ON a.id = t.account AND {date_filter}
@@ -164,8 +168,8 @@ fn holdings(c: Ctx) !void {
         \\    s.name as security,
         \\    SUM(CASE WHEN t.type = 'buy' THEN t.quantity ELSE 0 END) as bought,
         \\    SUM(CASE WHEN t.type = 'sell' THEN t.quantity ELSE 0 END) as sold,
-        \\    SUM(CASE WHEN t.type = 'buy' THEN t.total_value ELSE 0 END) as total_cost,
-        \\    SUM(CASE WHEN t.type = 'sell' THEN t.total_value ELSE 0 END) as total_proceeds
+        \\    SUM(CASE WHEN t.type = 'buy' THEN {total_eur} ELSE 0 END) as total_cost,
+        \\    SUM(CASE WHEN t.type = 'sell' THEN {total_eur} ELSE 0 END) as total_proceeds
         \\FROM "transaction" t
         \\JOIN account a ON t.account = a.id
         \\JOIN security s ON t.security = s.id
@@ -220,9 +224,9 @@ fn performance(c: Ctx) !void {
         \\    s.name as security,
         \\    SUM(CASE WHEN t.type = 'buy' THEN t.quantity ELSE 0 END) as total_bought,
         \\    SUM(CASE WHEN t.type = 'sell' THEN t.quantity ELSE 0 END) as total_sold,
-        \\    SUM(CASE WHEN t.type = 'buy' THEN t.total_value ELSE 0 END) as buy_value,
-        \\    SUM(CASE WHEN t.type = 'sell' THEN t.total_value ELSE 0 END) as sell_value,
-        \\    SUM(CASE WHEN t.type = 'dividend' THEN t.total_value ELSE 0 END) as dividends,
+        \\    SUM(CASE WHEN t.type = 'buy' THEN {total_eur} ELSE 0 END) as buy_value,
+        \\    SUM(CASE WHEN t.type = 'sell' THEN {total_eur} ELSE 0 END) as sell_value,
+        \\    SUM(CASE WHEN t.type = 'dividend' THEN {total_eur} ELSE 0 END) as dividends,
         \\    SUM(COALESCE(t.cost, 0)) as fees
         \\FROM "transaction" t
         \\JOIN account a ON t.account = a.id
@@ -290,13 +294,13 @@ fn summary(c: Ctx) !void {
         var st = try c.query(
             \\SELECT
             \\    COALESCE(SUM(CASE
-            \\        WHEN t.type = 'deposit' THEN t.total_value
-            \\        WHEN t.type = 'withdrawal' THEN -t.total_value
-            \\        WHEN t.type = 'interest' THEN t.total_value
-            \\        WHEN t.type = 'dividend' THEN t.total_value
-            \\        WHEN t.type = 'buy' THEN -t.total_value
-            \\        WHEN t.type = 'sell' THEN t.total_value
-            \\        WHEN t.type = 'transfer' THEN t.total_value
+            \\        WHEN t.type = 'deposit' THEN {total_eur}
+            \\        WHEN t.type = 'withdrawal' THEN -{total_eur}
+            \\        WHEN t.type = 'interest' THEN {total_eur}
+            \\        WHEN t.type = 'dividend' THEN {total_eur}
+            \\        WHEN t.type = 'buy' THEN -{total_eur}
+            \\        WHEN t.type = 'sell' THEN {total_eur}
+            \\        WHEN t.type = 'transfer' THEN {total_eur}
             \\        ELSE 0
             \\    END), 0) as cash_balance,
             \\    COALESCE(SUM(CASE WHEN t.cost IS NOT NULL THEN t.cost ELSE 0 END), 0) as total_fees
@@ -315,10 +319,10 @@ fn summary(c: Ctx) !void {
     {
         var st = try c.query(
             \\SELECT
-            \\    COALESCE(SUM(CASE WHEN t.type = 'deposit' THEN t.total_value ELSE 0 END), 0) as deposits,
-            \\    COALESCE(SUM(CASE WHEN t.type = 'withdrawal' THEN t.total_value ELSE 0 END), 0) as withdrawals,
-            \\    COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN t.total_value ELSE 0 END), 0) as dividends,
-            \\    COALESCE(SUM(CASE WHEN t.type = 'interest' THEN t.total_value ELSE 0 END), 0) as interest
+            \\    COALESCE(SUM(CASE WHEN t.type = 'deposit' THEN {total_eur} ELSE 0 END), 0) as deposits,
+            \\    COALESCE(SUM(CASE WHEN t.type = 'withdrawal' THEN {total_eur} ELSE 0 END), 0) as withdrawals,
+            \\    COALESCE(SUM(CASE WHEN t.type = 'dividend' THEN {total_eur} ELSE 0 END), 0) as dividends,
+            \\    COALESCE(SUM(CASE WHEN t.type = 'interest' THEN {total_eur} ELSE 0 END), 0) as interest
             \\FROM account a
             \\LEFT JOIN "transaction" t ON a.id = t.account AND {date_filter}
             \\WHERE {account_filter}
@@ -334,7 +338,7 @@ fn summary(c: Ctx) !void {
         var st = try c.query(
             \\SELECT
             \\    SUM(CASE WHEN t.type = 'buy' THEN t.quantity ELSE -t.quantity END) as shares,
-            \\    SUM(CASE WHEN t.type = 'buy' THEN t.total_value ELSE 0 END) as buy_total,
+            \\    SUM(CASE WHEN t.type = 'buy' THEN {total_eur} ELSE 0 END) as buy_total,
             \\    SUM(CASE WHEN t.type = 'buy' THEN t.quantity ELSE 0 END) as bought_qty
             \\FROM "transaction" t
             \\JOIN account a ON t.account = a.id
@@ -358,8 +362,8 @@ fn summary(c: Ctx) !void {
             \\    s.id,
             \\    SUM(CASE WHEN t.type = 'buy' THEN t.quantity ELSE 0 END) as bought,
             \\    SUM(CASE WHEN t.type = 'sell' THEN t.quantity ELSE 0 END) as sold,
-            \\    SUM(CASE WHEN t.type = 'buy' THEN t.total_value ELSE 0 END) as buy_value,
-            \\    SUM(CASE WHEN t.type = 'sell' THEN t.total_value ELSE 0 END) as sell_value
+            \\    SUM(CASE WHEN t.type = 'buy' THEN {total_eur} ELSE 0 END) as buy_value,
+            \\    SUM(CASE WHEN t.type = 'sell' THEN {total_eur} ELSE 0 END) as sell_value
             \\FROM "transaction" t
             \\JOIN account a ON t.account = a.id
             \\JOIN security s ON t.security = s.id
