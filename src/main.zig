@@ -107,7 +107,11 @@ const top_help =
 const memory_budget = 32 * 1024 * 1024;
 var memory: [memory_budget]u8 = undefined;
 
+const sqlite_heap_size = 8 * 1024 * 1024;
+var sqlite_heap: [sqlite_heap_size]u8 align(8) = undefined;
+
 pub fn main(init: std.process.Init.Minimal) !u8 {
+    try sqlite.useHeap(&sqlite_heap);
     var fba: std.heap.FixedBufferAllocator = .init(&memory);
     const a = fba.allocator();
 

@@ -20,6 +20,7 @@ pub fn build(b: *std.Build) void {
             "-DSQLITE_DEFAULT_MEMSTATUS=0",
             "-DSQLITE_OMIT_LOAD_EXTENSION",
             "-DSQLITE_OMIT_DEPRECATED",
+            "-DSQLITE_ENABLE_MEMSYS5",
         },
     });
 
