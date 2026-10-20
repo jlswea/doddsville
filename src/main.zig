@@ -417,4 +417,5 @@ test {
     _ = @import("format.zig");
     _ = @import("args.zig");
     _ = @import("migrations.zig");
+    _ = @import("lookup.zig");
 }
