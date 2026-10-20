@@ -78,20 +78,25 @@ pub const Client = struct {
                 // Compressed responses would need a decompression window allocated per request.
                 .accept_encoding = .{ .override = "identity" },
             },
-        }) catch |err| {
-            c.last_error = switch (err) {
-                error.WriteFailed => try c.app.fmt("Response from {s} is larger than {d} KiB", .{ url, max_response_size / 1024 }),
-                error.ConnectionRefused, error.NetworkUnreachable, error.HostUnreachable, error.ConnectionResetByPeer, error.UnknownHostName, error.NameServerFailure => try c.app.fmt("Cannot connect to {s}", .{c.base_url}),
-                else => try c.app.fmt("Request error: {s} ({s})", .{ @errorName(err), url }),
-            };
-            return error.Connection;
-        };
+        }) catch |err| return c.transportError(err, url);
         return .{ .status = result.status, .body = body.buffered() };
+    }
+
+    fn transportError(c: *Client, err: anyerror, url: []const u8) Error {
+        c.last_error = switch (err) {
+            error.WriteFailed => try c.app.fmt("Response from {s} is larger than {d} KiB", .{ url, max_response_size / 1024 }),
+            error.ConnectionRefused, error.NetworkUnreachable, error.HostUnreachable, error.ConnectionResetByPeer, error.UnknownHostName, error.NameServerFailure => try c.app.fmt("Cannot connect to {s}", .{c.base_url}),
+            else => try c.app.fmt("Request error: {s} ({s})", .{ @errorName(err), url }),
+        };
+        return error.Connection;
     }
 
     /// request + raise_for_status
     pub fn ok(c: *Client, method: std.http.Method, path: []const u8, payload: ?[]const u8, content_type: ?[]const u8) Error!Response {
-        const r = try c.request(method, path, payload, content_type);
+        return c.checkStatus(try c.request(method, path, payload, content_type), path);
+    }
+
+    fn checkStatus(c: *Client, r: Response, path: []const u8) Error!Response {
         const code = @intFromEnum(r.status);
         if (code >= 400) {
             c.last_error = try c.app.fmt("{d} {s} Error: {s} for url: {s}{s}", .{
@@ -199,19 +204,57 @@ pub const Client = struct {
         _ = try c.sendJson(.PATCH, path, out.items);
     }
 
+    /// POST `head ++ <file contents> ++ tail`, streaming the file from disk.
+    fn postFile(c: *Client, url: []const u8, content_type: []const u8, head: []const u8, file: Io.File, size: u64, tail: []const u8) !Response {
+        var req = try c.http.request(.POST, try std.Uri.parse(url), .{
+            .redirect_behavior = .unhandled,
+            .headers = .{
+                .authorization = .{ .override = c.auth },
+                .content_type = .{ .override = content_type },
+                .accept_encoding = .{ .override = "identity" },
+            },
+        });
+        defer req.deinit();
+        req.transfer_encoding = .{ .content_length = head.len + size + tail.len };
+
+        var send_buf: [16 * 1024]u8 = undefined;
+        var body = try req.sendBodyUnflushed(&send_buf);
+        try body.writer.writeAll(head);
+        var read_buf: [16 * 1024]u8 = undefined;
+        var file_reader = file.reader(c.app.io, &read_buf);
+        if (try file_reader.interface.streamRemaining(&body.writer) != size) return error.FileChangedDuringUpload;
+        try body.writer.writeAll(tail);
+        try body.end();
+        try req.connection.?.flush();
+
+        var response = try req.receiveHead(&.{});
+        var out: Io.Writer = .fixed(&response_buf);
+        var transfer_buf: [64]u8 = undefined;
+        _ = response.reader(&transfer_buf).streamRemaining(&out) catch |err| switch (err) {
+            error.ReadFailed => return response.bodyErr().?,
+            else => |e| return e,
+        };
+        return .{ .status = response.head.status, .body = out.buffered() };
+    }
+
     /// POST /api/documents/post_document/ and wait for the consumer task.
     pub fn upload(c: *Client, file_path: []const u8, dv_tag_id: i64, metadata: ?DocumentMetadata, remove_tag_ids: []const i64) (Error || error{ReadFailed})!i64 {
         const a = c.app.a;
-        const data = Io.Dir.cwd().readFileAlloc(c.app.io, file_path, a, .limited(512 << 20)) catch |err| {
+        const io = c.app.io;
+        const file = Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
             c.last_error = try c.app.fmt("cannot read {s}: {s}", .{ file_path, @errorName(err) });
             return error.ReadFailed;
         };
+        defer file.close(io);
+        const size = (file.stat(io) catch |err| {
+            c.last_error = try c.app.fmt("cannot read {s}: {s}", .{ file_path, @errorName(err) });
+            return error.ReadFailed;
+        }).size;
 
         const boundary = "----dvFormBoundary7MA4YWxkTrZu0gW";
-        var body: std.ArrayList(u8) = .empty;
-        try body.print(a, "--{s}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{s}\"\r\nContent-Type: application/octet-stream\r\n\r\n", .{ boundary, std.fs.path.basename(file_path) });
-        try body.appendSlice(a, data);
-        try body.appendSlice(a, "\r\n");
+        const head = try c.app.fmt("--{s}\r\nContent-Disposition: form-data; name=\"document\"; filename=\"{s}\"\r\nContent-Type: application/octet-stream\r\n\r\n", .{ boundary, std.fs.path.basename(file_path) });
+        var tail: std.ArrayList(u8) = .empty;
+        try tail.appendSlice(a, "\r\n");
 
         const Field = struct { []const u8, []const u8 };
         var fields: std.ArrayList(Field) = .empty;
@@ -226,10 +269,14 @@ pub const Client = struct {
         }
         try fields.append(a, .{ "tags", try c.app.fmt("{d}", .{dv_tag_id}) });
         for (fields.items) |fl|
-            try body.print(a, "--{s}\r\nContent-Disposition: form-data; name=\"{s}\"\r\n\r\n{s}\r\n", .{ boundary, fl[0], fl[1] });
-        try body.print(a, "--{s}--\r\n", .{boundary});
+            try tail.print(a, "--{s}\r\nContent-Disposition: form-data; name=\"{s}\"\r\n\r\n{s}\r\n", .{ boundary, fl[0], fl[1] });
+        try tail.print(a, "--{s}--\r\n", .{boundary});
 
-        const r = try c.ok(.POST, "/api/documents/post_document/", body.items, "multipart/form-data; boundary=" ++ boundary);
+        const post_path = "/api/documents/post_document/";
+        const url = try c.app.fmt("{s}{s}", .{ c.base_url, post_path });
+        const sent = c.postFile(url, "multipart/form-data; boundary=" ++ boundary, head, file, size, tail.items) catch |err|
+            return c.transportError(err, url);
+        const r = try c.checkStatus(sent, post_path);
         const task_id = try a.dupe(u8, std.mem.trim(u8, f.strip(r.body), "\""));
 
         var doc_id: ?i64 = null;
