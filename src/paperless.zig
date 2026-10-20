@@ -25,6 +25,12 @@ pub const Error = error{ NotConfigured, Http, Connection, UploadFailed, Timeout,
 
 pub const Response = struct { status: std.http.Status, body: []const u8 };
 
+pub const max_response_size = 1024 * 1024;
+
+// Shared by all clients: each response body is only valid until the next request.
+var response_buf: [max_response_size]u8 = undefined;
+var redirect_buf: [8 * 1024]u8 = undefined;
+
 pub const Client = struct {
     app: *App,
     base_url: []const u8,
@@ -59,24 +65,28 @@ pub const Client = struct {
 
     pub fn request(c: *Client, method: std.http.Method, path: []const u8, payload: ?[]const u8, content_type: ?[]const u8) Error!Response {
         const url = try c.app.fmt("{s}{s}", .{ c.base_url, path });
-        var body: Io.Writer.Allocating = .init(c.app.a);
+        var body: Io.Writer = .fixed(&response_buf);
         const result = c.http.fetch(.{
             .location = .{ .url = url },
             .method = method,
             .payload = payload,
-            .response_writer = &body.writer,
+            .response_writer = &body,
+            .redirect_buffer = &redirect_buf,
             .headers = .{
                 .authorization = .{ .override = c.auth },
                 .content_type = if (content_type) |ct| .{ .override = ct } else .default,
+                // Compressed responses would need a decompression window allocated per request.
+                .accept_encoding = .{ .override = "identity" },
             },
         }) catch |err| {
             c.last_error = switch (err) {
+                error.WriteFailed => try c.app.fmt("Response from {s} is larger than {d} KiB", .{ url, max_response_size / 1024 }),
                 error.ConnectionRefused, error.NetworkUnreachable, error.HostUnreachable, error.ConnectionResetByPeer, error.UnknownHostName, error.NameServerFailure => try c.app.fmt("Cannot connect to {s}", .{c.base_url}),
                 else => try c.app.fmt("Request error: {s} ({s})", .{ @errorName(err), url }),
             };
             return error.Connection;
         };
-        return .{ .status = result.status, .body = body.written() };
+        return .{ .status = result.status, .body = body.buffered() };
     }
 
     /// request + raise_for_status
@@ -107,7 +117,8 @@ pub const Client = struct {
     }
 
     fn parse(c: *Client, body: []const u8) Error!json.Value {
-        return json.parseFromSliceLeaky(json.Value, c.app.a, body, .{}) catch {
+        // alloc_always: the parsed value must not point into the reused response buffer.
+        return json.parseFromSliceLeaky(json.Value, c.app.a, body, .{ .allocate = .alloc_always }) catch {
             c.last_error = "invalid JSON from paperless";
             return error.BadResponse;
         };
@@ -219,7 +230,7 @@ pub const Client = struct {
         try body.print(a, "--{s}--\r\n", .{boundary});
 
         const r = try c.ok(.POST, "/api/documents/post_document/", body.items, "multipart/form-data; boundary=" ++ boundary);
-        const task_id = std.mem.trim(u8, f.strip(r.body), "\"");
+        const task_id = try a.dupe(u8, std.mem.trim(u8, f.strip(r.body), "\""));
 
         var doc_id: ?i64 = null;
         var tries: usize = 0;
