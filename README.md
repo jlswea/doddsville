@@ -1,15 +1,5 @@
 # Doddsville
-
-`dv` is being ported from Python to **Zig 0.17**. The Zig binary covers the day-to-day
-commands; `import` (PDF/LLM parsing), `sensor` and the Textual TUI still run on the Python
-CLI until they are ported. Both read and write the same `data.db`.
-
-| Command | Zig `dv` | Python `cli.py` |
-| --- | --- | --- |
-| `account`, `add`, `list`, `edit`, `report`, `config` | ✅ | ✅ |
-| `doc add` / `doc edit` (Paperless) | ✅ | ✅ |
-| `import` (PDF + Ollama) | – (prints a pointer to Python) | ✅ |
-| `sensor`, TUI | – | ✅ |
+A personal finance ledger.
 
 ## Zig CLI
 
