@@ -68,8 +68,8 @@ pub fn run(app: *App, args: Args) !void {
     const total = if (args.kind.hasQuantity()) args.quantity * args.amount else args.amount;
 
     try app.print("\n{s}Recording {s} transaction:{s}\n", .{ f.BOLD, args.kind.upper(), f.RESET });
-    try app.print("  Account:  {s}\n", .{account.name});
-    if (security) |s| try app.print("  Security: {s}\n", .{s.name});
+    try app.print("  Account:  {s}\n", .{account.name.slice()});
+    if (security) |*s| try app.print("  Security: {s}\n", .{s.name.slice()});
     if (args.kind.hasQuantity()) {
         try app.print("  Quantity: {d}\n", .{args.quantity});
         try app.print("  Price:    {s}\n", .{try f.cents(app.a, args.amount)});
@@ -121,8 +121,8 @@ fn transfer(app: *App, args: Args) !void {
     if (args.docs) |d| resolved = try paperless.resolveDocArgs(app, d);
 
     try app.print("\n{s}Recording TRANSFER transaction:{s}\n", .{ f.BOLD, f.RESET });
-    try app.print("  From:     {s}\n", .{from.name});
-    try app.print("  To:       {s}\n", .{to.name});
+    try app.print("  From:     {s}\n", .{from.name.slice()});
+    try app.print("  To:       {s}\n", .{to.name.slice()});
     try app.print("  Amount:   {s}\n", .{try f.cents(app.a, args.amount)});
     try app.print("  Cost:     {s}\n", .{try f.cents(app.a, args.cost)});
     try app.print("  Date:     {s}\n", .{args.date});
@@ -152,15 +152,20 @@ fn transfer(app: *App, args: Args) !void {
 }
 
 fn pickAccount(app: *App, pattern: []const u8, label: []const u8, prompt: []const u8) !?lookup.Account {
-    const results = try lookup.accountsLike(app, pattern);
+    var buf: [lookup.max_matches + 1]lookup.Account = undefined;
+    const results = try lookup.accountsLike(app, pattern, &buf);
     if (results.len == 0) {
         const cap = if (std.mem.eql(u8, label, "source")) "Source" else "Destination";
         try app.print("{s}{s} account '{s}' not found.{s}\n", .{ f.RED, cap, pattern, f.RESET });
         return null;
     }
+    if (results.len > lookup.max_matches) {
+        try app.print("{s}More than {d} {s} accounts match '{s}'; be more specific.{s}\n", .{ f.RED, lookup.max_matches, label, pattern, f.RESET });
+        return null;
+    }
     if (results.len == 1) return results[0];
     try app.print("Multiple {s} accounts match '{s}':\n", .{ label, pattern });
-    for (results, 1..) |acc, i| try app.print("  {d}: {s}\n", .{ i, acc.name });
+    for (results, 1..) |*acc, i| try app.print("  {d}: {s}\n", .{ i, acc.name.slice() });
     return lookup.pick(app, lookup.Account, results, prompt);
 }
 
