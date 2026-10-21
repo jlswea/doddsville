@@ -75,12 +75,13 @@ pub fn edit(app: *App, doc_id: i64) !void {
 fn editInner(app: *App, cl: *paperless.Client, doc_id: i64) !void {
     const a = app.a;
     const path = try app.fmt("/api/documents/{d}/", .{doc_id});
-    const r = try cl.request(.GET, path, null, null);
+    const get_path = try app.fmt("{s}{s}", .{ path, paperless.document_fields });
+    const r = try cl.request(.GET, get_path, null, null);
     if (r.status == .not_found) {
         try app.print("{s}Document {d} not found in Paperless.{s}\n", .{ f.RED, doc_id, f.RESET });
         return;
     }
-    const doc = try cl.getJson(path);
+    const doc = try cl.getJson(get_path);
 
     const lists: ui.Lists = .{
         .correspondents = try cl.fetchNamed("correspondents"),
