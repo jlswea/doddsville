@@ -104,10 +104,10 @@ const top_help =
 
 /// TigerStyle: all memory comes from this one static budget. Nothing is
 /// allocated from the OS after startup; exceeding it is an error, not growth.
-const memory_budget = 32 * 1024 * 1024;
+const memory_budget = 16 * 1024 * 1024;
 var memory: [memory_budget]u8 = undefined;
 
-const sqlite_heap_size = 8 * 1024 * 1024;
+const sqlite_heap_size = 4 * 1024 * 1024;
 var sqlite_heap: [sqlite_heap_size]u8 align(8) = undefined;
 
 pub fn main(init: std.process.Init.Minimal) !u8 {
