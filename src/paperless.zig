@@ -25,7 +25,7 @@ pub const Error = error{ NotConfigured, Http, Connection, UploadFailed, Timeout,
 
 pub const Response = struct { status: std.http.Status, body: []const u8 };
 
-pub const max_response_size = 1024 * 1024;
+pub const max_response_size = 256 * 1024;
 
 // The document detail endpoint otherwise includes the full OCR text (`content`), which dv never uses.
 pub const document_fields = "?fields=id,title,created,correspondent,document_type,storage_path,tags,archive_serial_number,custom_fields";
