@@ -19,6 +19,7 @@ extern fn sqlite3_bind_int64(stmt: *StmtHandle, idx: c_int, v: i64) c_int;
 extern fn sqlite3_bind_double(stmt: *StmtHandle, idx: c_int, v: f64) c_int;
 extern fn sqlite3_bind_text(stmt: *StmtHandle, idx: c_int, v: [*]const u8, n: c_int, destructor: ?*const anyopaque) c_int;
 extern fn sqlite3_bind_null(stmt: *StmtHandle, idx: c_int) c_int;
+extern fn sqlite3_bind_parameter_count(stmt: *StmtHandle) c_int;
 extern fn sqlite3_column_type(stmt: *StmtHandle, col: c_int) c_int;
 extern fn sqlite3_column_int64(stmt: *StmtHandle, col: c_int) i64;
 extern fn sqlite3_column_double(stmt: *StmtHandle, col: c_int) f64;
@@ -124,6 +125,7 @@ pub const Stmt = struct {
     /// types: integers, floats, `[]const u8`-like strings, optionals of those
     /// (null binds SQL NULL) and `null`.
     pub fn bindAll(st: *Stmt, args: anytype) Error!void {
+        std.debug.assert(sqlite3_bind_parameter_count(st.handle) == args.len);
         inline for (args, 1..) |arg, i| try st.bindOne(@intCast(i), arg);
     }
 
