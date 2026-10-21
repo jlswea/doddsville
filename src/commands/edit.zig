@@ -3,6 +3,7 @@
 const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
+const ledger = @import("../ledger.zig");
 const lookup = @import("../lookup.zig");
 const ui = @import("../ui.zig");
 
@@ -88,6 +89,8 @@ pub fn run(app: *App, txn_id: i64) !void {
     if (linked) |l| try app.db.run(
         \\UPDATE "transaction" SET total_value = ?, date = ? WHERE id = ?
     , .{ -new_total, result.date, l });
+    // Changing a leg's type dissolves the pair, so only an unchanged transfer is checked.
+    if (linked) |l| if (std.mem.eql(u8, result.type, "transfer")) try ledger.assertTransferPair(app.db, txn_id, l);
     try app.db.exec("COMMIT");
     try app.print("{s}Transaction {d} updated.{s}\n", .{ f.GREEN, txn_id, f.RESET });
 }

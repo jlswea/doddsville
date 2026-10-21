@@ -4,6 +4,7 @@
 const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
+const ledger = @import("../ledger.zig");
 const lookup = @import("../lookup.zig");
 const paperless = @import("../paperless.zig");
 
@@ -145,6 +146,7 @@ fn transfer(app: *App, args: Args) !void {
     , .{ to.id, args.amount, args.date, outgoing });
     const incoming = app.db.lastInsertRowId();
     try app.db.run("UPDATE \"transaction\" SET linked_transaction = ? WHERE id = ?", .{ incoming, outgoing });
+    try ledger.assertTransferPair(app.db, outgoing, incoming);
     try app.db.exec("COMMIT");
 
     try app.print("{s}Transfer recorded (IDs: {d} <-> {d}).{s}\n", .{ f.GREEN, outgoing, incoming, f.RESET });
