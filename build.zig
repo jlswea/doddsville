@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
         .file = sqlite.path("sqlite3.c"),
         .flags = &.{
             "-DSQLITE_THREADSAFE=0",
-            "-DSQLITE_DEFAULT_MEMSTATUS=0",
+            "-DSQLITE_DEFAULT_MEMSTATUS=1",
             "-DSQLITE_OMIT_LOAD_EXTENSION",
             "-DSQLITE_OMIT_DEPRECATED",
             "-DSQLITE_ENABLE_MEMSYS5",

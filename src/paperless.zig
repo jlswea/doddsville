@@ -34,6 +34,13 @@ pub const document_fields = "?fields=id,title,created,correspondent,document_typ
 var response_buf: [max_response_size]u8 = undefined;
 var redirect_buf: [8 * 1024]u8 = undefined;
 
+pub var largest_response: usize = 0;
+
+fn received(body: []const u8) []const u8 {
+    largest_response = @max(largest_response, body.len);
+    return body;
+}
+
 pub const Client = struct {
     app: *App,
     base_url: []const u8,
@@ -82,7 +89,7 @@ pub const Client = struct {
                 .accept_encoding = .{ .override = "identity" },
             },
         }) catch |err| return c.transportError(err, url);
-        return .{ .status = result.status, .body = body.buffered() };
+        return .{ .status = result.status, .body = received(body.buffered()) };
     }
 
     fn transportError(c: *Client, err: anyerror, url: []const u8) Error {
@@ -239,7 +246,7 @@ pub const Client = struct {
             error.ReadFailed => return response.bodyErr().?,
             else => |e| return e,
         };
-        return .{ .status = response.head.status, .body = out.buffered() };
+        return .{ .status = response.head.status, .body = received(out.buffered()) };
     }
 
     /// POST /api/documents/post_document/ and wait for the consumer task.

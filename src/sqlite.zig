@@ -7,6 +7,7 @@ const Handle = opaque {};
 const StmtHandle = opaque {};
 
 extern fn sqlite3_config(op: c_int, ...) c_int;
+extern fn sqlite3_status64(op: c_int, current: *i64, highwater: *i64, reset: c_int) c_int;
 extern fn sqlite3_open_v2(filename: [*:0]const u8, db: *?*Handle, flags: c_int, vfs: ?[*:0]const u8) c_int;
 extern fn sqlite3_close_v2(db: *Handle) c_int;
 extern fn sqlite3_errmsg(db: *Handle) [*:0]const u8;
@@ -27,6 +28,7 @@ extern fn sqlite3_last_insert_rowid(db: *Handle) i64;
 
 const SQLITE_OK = 0;
 const SQLITE_CONFIG_HEAP = 8;
+const SQLITE_STATUS_MEMORY_USED = 0;
 const SQLITE_CONSTRAINT = 19;
 const SQLITE_ROW = 100;
 const SQLITE_DONE = 101;
@@ -45,6 +47,13 @@ pub fn useHeap(heap: []align(8) u8) Error!void {
     const min_alloc: c_int = 64;
     if (sqlite3_config(SQLITE_CONFIG_HEAP, heap.ptr, @as(c_int, @intCast(heap.len)), min_alloc) != SQLITE_OK)
         return error.Sqlite;
+}
+
+pub fn peakMemory() usize {
+    var current: i64 = 0;
+    var highwater: i64 = 0;
+    _ = sqlite3_status64(SQLITE_STATUS_MEMORY_USED, &current, &highwater, 0);
+    return @intCast(highwater);
 }
 
 pub const Db = struct {

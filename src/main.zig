@@ -8,6 +8,7 @@ const Config = @import("Config.zig");
 const args = @import("args.zig");
 const f = @import("format.zig");
 const migrations = @import("migrations.zig");
+const paperless = @import("paperless.zig");
 const sqlite = @import("sqlite.zig");
 
 const account_cmd = @import("commands/account.zig");
@@ -97,6 +98,7 @@ const top_help =
     \\  -h, --help     show this help message and exit
     \\  -v, --version  show the installed version and exit
     \\  --db DB        Path to SQLite database file (overrides config)
+    \\  --mem-stats    Print peak memory use to stderr when done
     \\
 ;
 
@@ -160,8 +162,19 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
         },
     };
     app.out.flush() catch {};
+    if (mem_stats) std.debug.print("dv: memory peak {d} of {d} KiB, sqlite {d} of {d} KiB, largest response {d} of {d} KiB\n", .{
+        kib(fba.end_index),              memory_budget / 1024,
+        kib(sqlite.peakMemory()),        sqlite_heap_size / 1024,
+        kib(paperless.largest_response), paperless.max_response_size / 1024,
+    });
     return code;
 }
+
+fn kib(bytes: usize) usize {
+    return std.math.divCeil(usize, bytes, 1024) catch unreachable;
+}
+
+var mem_stats = false;
 
 /// Program name for argparse-style error lines ("dv add buy: error: ...").
 var usage_prog: []const u8 = "dv: ";
@@ -208,6 +221,8 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
             db_flag = argv_all[i];
         } else if (std.mem.startsWith(u8, arg, "--db=")) {
             db_flag = arg["--db=".len..];
+        } else if (eql(arg, "--mem-stats")) {
+            mem_stats = true;
         } else return usage(app, "dv", "unrecognized arguments: {s}", .{arg});
     }
     if (i >= argv_all.len) return usage(app, "dv", "the following arguments are required: command", .{});
