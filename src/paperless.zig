@@ -135,16 +135,18 @@ pub const Client = struct {
     }
 
     /// fetch_paperless_{correspondents,document_types,storage_paths,tags}
-    pub fn fetchNamed(c: *Client, endpoint: []const u8) Error![]Named {
-        const v = try c.getJson(try c.app.fmt("/api/{s}/?page_size=1000", .{endpoint}));
-        var list: std.ArrayList(Named) = .empty;
-        if (field(v, "results")) |res| if (res == .array) for (res.array.items) |item| {
-            try list.append(c.app.a, .{
-                .id = asInt(field(item, "id")) orelse continue,
-                .name = asStr(field(item, "name")) orelse "",
-            });
+    pub fn fetchNamed(c: *Client, endpoint: []const u8) Error![]const Named {
+        const r = try c.ok(.GET, try c.app.fmt("/api/{s}/?page_size=1000", .{endpoint}), null, null);
+        // Parsing into the two fields we use is far smaller than a generic json.Value tree.
+        const Page = struct { results: []const Named = &.{} };
+        const page = json.parseFromSliceLeaky(Page, c.app.a, r.body, .{
+            .allocate = .alloc_always,
+            .ignore_unknown_fields = true,
+        }) catch {
+            c.last_error = "invalid JSON from paperless";
+            return error.BadResponse;
         };
-        return list.items;
+        return page.results;
     }
 
     pub fn getOrCreateCustomField(c: *Client) Error!i64 {
