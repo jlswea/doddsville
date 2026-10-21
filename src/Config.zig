@@ -1,5 +1,5 @@
-//! Port of config.py. Non-secret settings live in ./dv.conf (key=value lines);
-//! Paperless URL/token come from DV_PAPERLESS_URL / DV_PAPERLESS_TOKEN.
+//! Settings come from ~/.config/doddsville/config.zon. Without that file the
+//! Python-era sources are used: ./dv.conf plus DV_PAPERLESS_URL / DV_PAPERLESS_TOKEN.
 
 const std = @import("std");
 const Io = std.Io;
@@ -15,6 +15,49 @@ pub const Entry = struct { key: []const u8, value: []const u8 };
 
 /// Insertion-ordered, like the Python dict.
 entries: std.ArrayList(Entry) = .empty,
+/// Set when the settings were read from config.zon.
+zon_path: ?[]const u8 = null,
+
+pub const File = struct {
+    db: ?[]const u8 = null,
+    paperless: struct {
+        url: ?[]const u8 = null,
+    } = .{},
+};
+
+fn zonPath(a: Allocator, environ: *const std.process.Environ.Map) !?[]const u8 {
+    if (environ.get("XDG_CONFIG_HOME")) |dir| if (dir.len > 0)
+        return try std.fmt.allocPrint(a, "{s}/doddsville/config.zon", .{dir});
+    const home = environ.get("HOME") orelse return null;
+    return try std.fmt.allocPrint(a, "{s}/.config/doddsville/config.zon", .{home});
+}
+
+fn loadZon(a: Allocator, io: Io, environ: *const std.process.Environ.Map) !?Config {
+    const path = (try zonPath(a, environ)) orelse return null;
+    const source = Io.Dir.cwd().readFileAllocOptions(io, path, a, .limited(64 * 1024), .of(u8), 0) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
+    };
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const file = std.zon.parse.fromSlice(File, .{
+        .gpa = a,
+        .arena = a,
+        .source = source,
+        .diagnostics = &diagnostics,
+    }) catch |err| switch (err) {
+        error.ParseZon => {
+            std.debug.print("{f}", .{diagnostics.fmt(path)});
+            return error.InvalidConfig;
+        },
+        else => return err,
+    };
+
+    var c: Config = .{ .zon_path = path };
+    try c.set(a, "db", file.db orelse default_db);
+    if (file.paperless.url) |url| try c.set(a, "paperless_url", url);
+    if (environ.get("DV_PAPERLESS_TOKEN")) |v| if (v.len > 0) try c.set(a, "paperless_token", v);
+    return c;
+}
 
 pub fn get(c: Config, key: []const u8) ?[]const u8 {
     for (c.entries.items) |e| if (std.mem.eql(u8, e.key, key)) return e.value;
@@ -35,6 +78,7 @@ pub fn isSecret(key: []const u8) bool {
 }
 
 pub fn load(a: Allocator, io: Io, environ: *const std.process.Environ.Map) !Config {
+    if (try loadZon(a, io, environ)) |zon| return zon;
     var c: Config = .{};
     try c.set(a, "db", default_db);
 
@@ -64,4 +108,18 @@ pub fn save(c: Config, a: Allocator, io: Io) !void {
         try buf.print(a, "{s}={s}\n", .{ e.key, e.value });
     }
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = config_file, .data = buf.items });
+}
+
+test "config.zon" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const file = try std.zon.parse.fromSlice(File, .{
+        .gpa = arena.allocator(),
+        .arena = arena.allocator(),
+        .source = ".{ .db = \"/tmp/x.db\", .paperless = .{ .url = \"http://nas:8000\" } }",
+        .diagnostics = &diagnostics,
+    });
+    try std.testing.expectEqualStrings("/tmp/x.db", file.db.?);
+    try std.testing.expectEqualStrings("http://nas:8000", file.paperless.url.?);
 }

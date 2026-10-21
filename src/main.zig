@@ -440,4 +440,5 @@ test {
     _ = @import("migrations.zig");
     _ = @import("lookup.zig");
     _ = @import("ledger.zig");
+    _ = @import("Config.zig");
 }
