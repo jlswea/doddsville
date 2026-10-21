@@ -63,7 +63,8 @@ fn inputCents(app: *App, label: []const u8, current: i64, currency: []const u8) 
     const take = @min(cents_s.len, 2);
     @memcpy(cbuf[0..take], cents_s[0..take]);
     const cents = std.fmt.parseInt(i64, &cbuf, 10) catch return invalidAmount(app, current);
-    return euros * 100 + cents;
+    const scaled = std.math.mul(i64, euros, 100) catch return invalidAmount(app, current);
+    return std.math.add(i64, scaled, cents) catch invalidAmount(app, current);
 }
 
 fn invalidAmount(app: *App, current: i64) !i64 {
@@ -82,6 +83,7 @@ pub fn editTransaction(app: *App, txn: EditTxn) !?EditTxn {
             try app.print("{s}Please enter a number{s}\n", .{ f.RED, f.RESET });
             continue;
         };
+        const before = t;
         switch (field_num) {
             1 => {
                 try app.line("\nSelect type:");
@@ -139,7 +141,18 @@ pub fn editTransaction(app: *App, txn: EditTxn) !?EditTxn {
             },
             else => try app.print("{s}Invalid choice. Enter 1-10{s}\n", .{ f.RED, f.RESET }),
         }
+        if (!totalFits(t)) {
+            try app.print("  {s}Amount is too large; change discarded.{s}\n", .{ f.RED, f.RESET });
+            t = before;
+        }
     }
+}
+
+// Keeps the totals computed in `preview` and by the caller within i64.
+fn totalFits(t: EditTxn) bool {
+    const total = std.math.mul(i64, t.unit_price_cents, t.quantity) catch return false;
+    const eur = @as(f64, @floatFromInt(total)) * t.exchange_rate;
+    return @abs(eur) < 9.0e18;
 }
 
 // --------------------------------------------------------- document metadata
