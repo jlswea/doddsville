@@ -27,6 +27,9 @@ pub const Response = struct { status: std.http.Status, body: []const u8 };
 
 pub const max_response_size = 1024 * 1024;
 
+// The document detail endpoint otherwise includes the full OCR text (`content`), which dv never uses.
+pub const document_fields = "?fields=id,title,created,correspondent,document_type,storage_path,tags,archive_serial_number,custom_fields";
+
 // Shared by all clients: each response body is only valid until the next request.
 var response_buf: [max_response_size]u8 = undefined;
 var redirect_buf: [8 * 1024]u8 = undefined;
@@ -130,7 +133,7 @@ pub const Client = struct {
     }
 
     pub fn documentExists(c: *Client, doc_id: i64) Error!bool {
-        const r = try c.request(.GET, try c.app.fmt("/api/documents/{d}/", .{doc_id}), null, null);
+        const r = try c.request(.GET, try c.app.fmt("/api/documents/{d}/?fields=id", .{doc_id}), null, null);
         return r.status == .ok;
     }
 
@@ -163,7 +166,7 @@ pub const Client = struct {
     pub fn setDocumentTransactionIds(c: *Client, doc_id: i64, field_id: i64, txn_ids: []const i64) Error!void {
         const a = c.app.a;
         const path = try c.app.fmt("/api/documents/{d}/", .{doc_id});
-        const doc = try c.getJson(path);
+        const doc = try c.getJson(try c.app.fmt("{s}{s}", .{ path, document_fields }));
         const cfs: []const json.Value = if (field(doc, "custom_fields")) |v| (if (v == .array) v.array.items else &.{}) else &.{};
 
         var ids: std.ArrayList(i64) = .empty;
@@ -306,7 +309,7 @@ pub const Client = struct {
         // Paperless workflows may add inbox/todo tags; strip them again.
         if (remove_tag_ids.len > 0) {
             const path = try c.app.fmt("/api/documents/{d}/", .{id});
-            const doc = try c.getJson(path);
+            const doc = try c.getJson(try c.app.fmt("{s}{s}", .{ path, document_fields }));
             var current: std.ArrayList(i64) = .empty;
             var removed = false;
             if (field(doc, "tags")) |tv| if (tv == .array) for (tv.array.items) |tag| {
