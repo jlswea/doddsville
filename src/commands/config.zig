@@ -9,7 +9,7 @@ const paperless = @import("../paperless.zig");
 
 pub fn show(app: *App) !void {
     try app.print("{s}Configuration:{s}\n", .{ f.BOLD, f.RESET });
-    try app.print("  Config file: {s}\n", .{Config.config_file});
+    try app.print("  Config file: {s}\n", .{app.config.zon_path orelse Config.config_file});
     for (app.config.entries.items) |e| {
         if (std.mem.eql(u8, e.key, "paperless_token"))
             try app.print("  {s}: (configured)\n", .{e.key})
@@ -31,6 +31,10 @@ pub fn show(app: *App) !void {
 }
 
 pub fn set(app: *App, key: []const u8, value: []const u8) !void {
+    if (app.config.zon_path) |path| {
+        try app.print("{s}Settings come from {s}; edit that file instead.{s}\n", .{ f.YELLOW, path, f.RESET });
+        return;
+    }
     if (Config.isSecret(key)) {
         const env_var = try app.fmt("DV_{s}", .{try std.ascii.allocUpperString(app.a, key)});
         try app.print("{s}{s} should be set via environment variable {s}{s}\n", .{ f.YELLOW, key, env_var, f.RESET });
