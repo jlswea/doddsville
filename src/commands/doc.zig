@@ -56,10 +56,7 @@ pub fn add(app: *App, txn_id: i64, docs: []const []const u8) !void {
 
 pub fn edit(app: *App, doc_id: i64) !void {
     var cl = paperless.Client.init(app) catch |err| {
-        try app.print("{s}{s}{s}\n", .{ f.RED, switch (err) {
-            error.NotConfigured => "paperless_url and paperless_token must be configured",
-            else => @errorName(err),
-        }, f.RESET });
+        try app.print("{s}{s}{s}\n", .{ f.RED, paperless.initMessage(err), f.RESET });
         return;
     };
     defer cl.deinit();

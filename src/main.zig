@@ -109,6 +109,8 @@ const top_help =
 const memory_budget = 4 * 1024 * 1024;
 var memory: [memory_budget]u8 = undefined;
 
+var io_memory: [16 * 1024]u8 = undefined;
+
 const sqlite_heap_size = 4 * 1024 * 1024;
 var sqlite_heap: [sqlite_heap_size]u8 align(8) = undefined;
 
@@ -117,8 +119,8 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
     var fba: std.heap.FixedBufferAllocator = .init(&memory);
     const a = fba.allocator();
 
-    // dv never uses async/concurrent Io, so the Io needs no allocator of its own.
-    var threaded: Io.Threaded = .init(.failing, .{
+    var io_fba: std.heap.FixedBufferAllocator = .init(&io_memory);
+    var threaded: Io.Threaded = .init(io_fba.allocator(), .{
         .argv0 = .init(init.args),
         .environ = init.environ,
     });

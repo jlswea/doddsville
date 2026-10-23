@@ -4,6 +4,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 
 const Config = @This();
 
@@ -22,6 +23,7 @@ pub const File = struct {
     db: ?[]const u8 = null,
     paperless: struct {
         url: ?[]const u8 = null,
+        keychain: ?[]const u8 = null,
     } = .{},
 };
 
@@ -55,8 +57,48 @@ fn loadZon(a: Allocator, io: Io, environ: *const std.process.Environ.Map) !?Conf
     var c: Config = .{ .zon_path = path };
     try c.set(a, "db", file.db orelse default_db);
     if (file.paperless.url) |url| try c.set(a, "paperless_url", url);
+    if (file.paperless.keychain) |service| {
+        if (service.len == 0) return error.InvalidConfig;
+        try c.set(a, "paperless_keychain", service);
+    }
     if (environ.get("DV_PAPERLESS_TOKEN")) |v| if (v.len > 0) try c.set(a, "paperless_token", v);
     return c;
+}
+
+pub fn paperlessToken(c: *Config, a: Allocator, io: Io, environ: *const std.process.Environ.Map) error{ OutOfMemory, Keychain }!?[]const u8 {
+    if (c.get("paperless_token")) |t| return t;
+    const service = c.get("paperless_keychain") orelse return null;
+    const token = keychainPassword(a, io, environ.get("HOME"), service, &token_buf) catch return error.Keychain;
+    assert(token.len > 0 and token.len < token_buf.len);
+    assert(token[token.len - 1] != '\n');
+    try c.set(a, "paperless_token", token);
+    return token;
+}
+
+var token_buf: [4096]u8 = undefined;
+
+fn keychainPassword(a: Allocator, io: Io, home: ?[]const u8, service: []const u8, buf: []u8) ![]const u8 {
+    assert(service.len > 0);
+    assert(buf.len > 0);
+    var env: std.process.Environ.Map = .init(a);
+    if (home) |h| try env.put("HOME", h);
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ "/usr/bin/security", "find-generic-password", "-s", service, "-w" },
+        .environ_map = &env,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .inherit,
+    });
+    defer child.kill(io);
+    var reader = child.stdout.?.readerStreaming(io, &.{});
+    const n = try reader.interface.readSliceShort(buf);
+    assert(n <= buf.len);
+    if (n == buf.len) return error.KeychainItemTooLong;
+    const term = try child.wait(io);
+    if (!term.success()) return error.KeychainItemNotFound;
+    const token = std.mem.trimEnd(u8, buf[0..n], "\n");
+    if (token.len == 0) return error.KeychainItemNotFound;
+    return token;
 }
 
 pub fn get(c: Config, key: []const u8) ?[]const u8 {
@@ -117,9 +159,10 @@ test "config.zon" {
     const file = try std.zon.parse.fromSlice(File, .{
         .gpa = arena.allocator(),
         .arena = arena.allocator(),
-        .source = ".{ .db = \"/tmp/x.db\", .paperless = .{ .url = \"http://nas:8000\" } }",
+        .source = ".{ .db = \"/tmp/x.db\", .paperless = .{ .url = \"http://nas:8000\", .keychain = \"dv\" } }",
         .diagnostics = &diagnostics,
     });
     try std.testing.expectEqualStrings("/tmp/x.db", file.db.?);
     try std.testing.expectEqualStrings("http://nas:8000", file.paperless.url.?);
+    try std.testing.expectEqualStrings("dv", file.paperless.keychain.?);
 }

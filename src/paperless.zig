@@ -20,7 +20,7 @@ pub const DocumentMetadata = struct {
     archive_serial_number: []const u8 = "",
 };
 
-pub const Error = error{ NotConfigured, Http, Connection, UploadFailed, Timeout, BadResponse } ||
+pub const Error = error{ NotConfigured, Keychain, Http, Connection, UploadFailed, Timeout, BadResponse } ||
     Allocator.Error || Io.Cancelable;
 
 pub const Response = struct { status: std.http.Status, body: []const u8 };
@@ -52,7 +52,7 @@ pub const Client = struct {
     /// Equivalent of get_paperless_headers: fails when URL/token are missing.
     pub fn init(app: *App) Error!Client {
         const url = app.config.get("paperless_url") orelse "";
-        const token = app.config.get("paperless_token") orelse "";
+        const token = (try app.config.paperlessToken(app.a, app.io, app.environ)) orelse "";
         if (url.len == 0 or token.len == 0) return error.NotConfigured;
         return .{
             .app = app,
@@ -68,7 +68,7 @@ pub const Client = struct {
 
     pub fn describe(c: *Client, err: anyerror) []const u8 {
         return switch (err) {
-            error.NotConfigured => "paperless_url and paperless_token must be configured",
+            error.NotConfigured, error.Keychain => initMessage(err),
             else => if (c.last_error.len > 0) c.last_error else @errorName(err),
         };
     }
@@ -477,14 +477,19 @@ pub fn insertTransactionDocuments(app: *App, txn_id: i64, doc_ids: []const i64) 
         try app.db.run("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, ?)", .{ txn_id, d });
 }
 
+pub fn initMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.NotConfigured => "paperless_url and paperless_token must be configured",
+        error.Keychain => "could not read the paperless token from the Keychain",
+        else => @errorName(err),
+    };
+}
+
 /// Link documents on both sides: rows in transaction_document plus the
 /// dv_transaction_id custom field in paperless. Shared by `add` and `doc add`.
 pub fn backlink(app: *App, doc_ids: []const i64, txn_ids: []const i64) !void {
     var cl = Client.init(app) catch |err| {
-        try app.print("  {s}Warning: Could not set transaction ID custom field: {s}{s}\n", .{ f.YELLOW, switch (err) {
-            error.NotConfigured => "paperless_url and paperless_token must be configured",
-            else => @errorName(err),
-        }, f.RESET });
+        try app.print("  {s}Warning: Could not set transaction ID custom field: {s}{s}\n", .{ f.YELLOW, initMessage(err), f.RESET });
         return;
     };
     defer cl.deinit();
