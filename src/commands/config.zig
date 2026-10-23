@@ -17,7 +17,7 @@ pub fn show(app: *App) !void {
             try app.print("  {s}: {s}\n", .{ e.key, e.value });
     }
     const no_url = app.config.get("paperless_url") == null;
-    const no_token = app.config.get("paperless_token") == null;
+    const no_token = app.config.get("paperless_token") == null and app.config.get("paperless_keychain") == null;
     if (no_url or no_token) {
         try app.print("\n  {s}Not set: {s}{s}{s}{s}\n", .{
             f.YELLOW,
@@ -49,7 +49,14 @@ pub fn set(app: *App, key: []const u8, value: []const u8) !void {
 pub fn check(app: *App) !void {
     try app.print("{s}Checking paperless-ngx connection...{s}\n\n", .{ f.BOLD, f.RESET });
     const url = app.config.get("paperless_url");
-    const token = app.config.get("paperless_token");
+    var keychain_failed = false;
+    const token = app.config.paperlessToken(app.a, app.io, app.environ) catch |err| switch (err) {
+        error.Keychain => blk: {
+            keychain_failed = true;
+            break :blk null;
+        },
+        else => |e| return e,
+    };
     const ok_mark = f.GREEN ++ "✓" ++ f.RESET;
     const bad_mark = f.RED ++ "✗" ++ f.RESET;
     try app.print("  {s} paperless_url: {s}\n", .{ if (url != null) ok_mark else bad_mark, url orelse "(not set)" });
@@ -62,6 +69,8 @@ pub fn check(app: *App) !void {
 
     if (url == null) {
         message = "paperless_url not configured";
+    } else if (keychain_failed) {
+        message = paperless.initMessage(error.Keychain);
     } else if (token == null) {
         message = "paperless_token not configured";
     } else {
@@ -102,6 +111,12 @@ pub fn check(app: *App) !void {
     } else {
         try app.print("\n  {s}✗ {s}{s}\n", .{ f.RED, message, f.RESET });
         if (url == null) try app.line("\n  Set env: export DV_PAPERLESS_URL=http://your-server:8000");
-        if (token == null) try app.line("  Set env: export DV_PAPERLESS_TOKEN=your-api-token");
+        if (token == null) if (app.config.zon_path == null)
+            try app.line("  Set env: export DV_PAPERLESS_TOKEN=your-api-token")
+        else if (app.config.get("paperless_keychain")) |service|
+            try app.print("  Store it: security add-generic-password -a dv -s {s} -w\n", .{service})
+        else
+            try app.line("  Add .keychain = \"doddsville-paperless\" to .paperless in config.zon and store it:\n" ++
+                "  security add-generic-password -a dv -s doddsville-paperless -w");
     }
 }
