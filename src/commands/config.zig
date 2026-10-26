@@ -13,6 +13,8 @@ pub fn show(app: *App) !void {
     try app.print("  db: {s}\n", .{c.db});
     try app.print("  paperless.url: {s}\n", .{c.paperless.url orelse "(not set)"});
     try app.print("  paperless.keychain: {s}\n", .{c.paperless.keychain orelse "(not set)"});
+    try app.print("  ollama.url: {s}\n", .{c.ollama.url});
+    try app.print("  ollama.model: {s}\n", .{c.ollama.model});
 }
 
 pub fn check(app: *App) !void {

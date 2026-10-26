@@ -399,7 +399,7 @@ fn parseCommand(app: *App, command: []const u8, rest: []const []const u8) !Actio
     if (eql(command, "import")) {
         const p = try parse(app, .{
             .prog = "dv import",
-            .help = "Import transactions from a broker PDF. Parsers: scalable_trade, scalable_statement.",
+            .help = "Import transactions from a broker PDF. Parsers: scalable_trade, scalable_statement; llm as last resort.",
             .positionals = &.{.{ .name = "pdf_file", .help = "Path to the PDF file to import" }},
             .options = &.{
                 .{ .long = "--account", .short = 'a', .dest = "account", .metavar = "ACCOUNT", .help = "Target account name (will prompt if not specified)" },
@@ -407,6 +407,7 @@ fn parseCommand(app: *App, command: []const u8, rest: []const []const u8) !Actio
                 .{ .long = "--no-upload", .dest = "no_upload", .kind = .flag, .help = "Don't upload PDF to paperless after import" },
                 .{ .long = "--raw", .dest = "raw", .kind = .flag, .help = "Show the extracted text and exit (for debugging)" },
                 .{ .long = "--parser", .dest = "parser", .metavar = "PARSER", .help = "Use this parser instead of detecting one" },
+                .{ .long = "--model", .dest = "model", .metavar = "MODEL", .help = "Override Ollama model (default from config or mistral)" },
             },
         }, rest);
         if (p.flag("raw")) return .{ .import_raw = p.pos[0] };
@@ -414,6 +415,7 @@ fn parseCommand(app: *App, command: []const u8, rest: []const []const u8) !Actio
             .pdf_file = p.pos[0],
             .account = p.get("account"),
             .parser = p.get("parser"),
+            .model = p.get("model"),
             .dry_run = p.flag("dry_run"),
             .no_upload = p.flag("no_upload"),
         } };
