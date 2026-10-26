@@ -67,7 +67,7 @@ pub fn run(app: *App, account: ?[]const u8, txn_type: ?[]const u8) !void {
         // str(security).split(" ")[0] or "-"
         const sec_first = if (security_full) |s| s[0 .. std.mem.indexOfScalar(u8, s, ' ') orelse s.len] else "";
         const security = if (sec_first.len > 0) sec_first else "-";
-        const qty_str = if (qty) |q| (if (q != 0) try f.int(a, q) else "-") else "-";
+        const qty_str = if (qty) |q| (if (q != 0) try f.quantity(a, q) else "-") else "-";
 
         var docs: []const u8 = "-";
         if (doc_ids) |ids| if (ids.len > 0) {
@@ -90,7 +90,7 @@ pub fn run(app: *App, account: ?[]const u8, txn_type: ?[]const u8) !void {
             try f.left(a, account_name, 15),
             try f.left(a, ttype, 10),
             try f.left(a, security, 20),
-            try f.left(a, qty_str, 6),
+            try f.left(a, qty_str, 9),
             try f.left(a, try centsOrDash(a, unit), 10),
             try f.left(a, try centsOrDash(a, total), 12),
         });
@@ -108,12 +108,12 @@ fn header(app: *App, a: std.mem.Allocator) !void {
         try f.left(a, "Account", 15),
         try f.left(a, "Type", 10),
         try f.left(a, "Security", 20),
-        try f.left(a, "Qty", 6),
+        try f.left(a, "Qty", 9),
         try f.left(a, "Unit", 10),
         try f.left(a, "Total", 12),
     });
     try app.print("{s} Docs{s}\n", .{ try f.left(a, "Cost", 8), f.RESET });
-    try app.line(f.rep("-", 115));
+    try app.line(f.rep("-", 118));
 }
 
 fn toEur(cents: ?i64, rate: f64) ?i64 {

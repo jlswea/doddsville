@@ -42,6 +42,7 @@ pub const Kind = enum {
 pub const Args = struct {
     kind: Kind,
     security: []const u8 = "",
+    /// Millionths of a share.
     quantity: i64 = 0,
     /// price per share for buy/sell, amount otherwise
     amount: i64 = 0,
@@ -66,13 +67,13 @@ pub fn run(app: *App, args: Args) !void {
     var resolved: paperless.Resolved = .{ .ids = &.{}, .failed = &.{} };
     if (args.docs) |d| resolved = try paperless.resolveDocArgs(app, d);
 
-    const total = if (args.kind.hasQuantity()) args.quantity * args.amount else args.amount;
+    const total = if (args.kind.hasQuantity()) f.lineTotal(args.quantity, args.amount).? else args.amount;
 
     try app.print("\n{s}Recording {s} transaction:{s}\n", .{ f.BOLD, args.kind.upper(), f.RESET });
     try app.print("  Account:  {s}\n", .{account.name.slice()});
     if (security) |*s| try app.print("  Security: {s}\n", .{s.name.slice()});
     if (args.kind.hasQuantity()) {
-        try app.print("  Quantity: {d}\n", .{args.quantity});
+        try app.print("  Quantity: {s}\n", .{try f.quantity(app.a, args.quantity)});
         try app.print("  Price:    {s}\n", .{try f.cents(app.a, args.amount)});
         try app.print("  Total:    {s}\n", .{try f.cents(app.a, total)});
     } else {

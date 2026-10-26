@@ -9,6 +9,7 @@ pub const EditTxn = struct {
     type: []const u8,
     date: []const u8,
     security: []const u8,
+    /// Millionths of a share.
     quantity: i64,
     unit_price_cents: i64,
     cost_cents: i64,
@@ -22,7 +23,7 @@ const confidences = [_][]const u8{ "high", "medium", "low" };
 
 fn preview(app: *App, t: EditTxn) !void {
     const a = app.a;
-    const total_orig: i64 = if (t.unit_price_cents != 0 and t.quantity != 0) t.unit_price_cents * t.quantity else 0;
+    const total_orig: i64 = if (t.unit_price_cents != 0 and t.quantity != 0) f.lineTotal(t.quantity, t.unit_price_cents).? else 0;
     const total_eur: i64 = @intFromFloat(@trunc(@as(f64, @floatFromInt(total_orig)) * t.exchange_rate));
     const net_eur = total_eur - t.cost_cents;
 
@@ -30,7 +31,7 @@ fn preview(app: *App, t: EditTxn) !void {
     try app.print("  1. Type:         {s}\n", .{t.type});
     try app.print("  2. Date:         {s}\n", .{t.date});
     try app.print("  3. Security:     {s}\n", .{t.security});
-    try app.print("  4. Quantity:     {d}\n", .{t.quantity});
+    try app.print("  4. Quantity:     {s}\n", .{try f.quantity(a, t.quantity)});
     try app.print("  5. Unit price:   {s}\n", .{if (t.unit_price_cents != 0) try f.centsIn(a, t.unit_price_cents, t.currency) else "-"});
     try app.print("  6. Fees (EUR):   {s}\n", .{if (t.cost_cents != 0) try f.cents(a, t.cost_cents) else "-"});
     try app.print("  7. Confidence:   {s}\n", .{t.confidence});
@@ -104,9 +105,9 @@ pub fn editTransaction(app: *App, txn: EditTxn) !?EditTxn {
                 if (s.len > 0) t.security = s;
             },
             4 => {
-                const s = f.strip(try app.input(try app.fmt("Quantity [{d}]: ", .{t.quantity})));
+                const s = f.strip(try app.input(try app.fmt("Quantity [{s}]: ", .{try f.quantity(app.a, t.quantity)})));
                 if (s.len > 0) {
-                    if (std.fmt.parseInt(i64, s, 10)) |q| t.quantity = q else |_| try app.print("  {s}Invalid quantity{s}\n", .{ f.RED, f.RESET });
+                    if (f.parseQuantity(s)) |q| t.quantity = q else |_| try app.print("  {s}Invalid quantity{s}\n", .{ f.RED, f.RESET });
                 }
             },
             5 => t.unit_price_cents = try inputCents(app, "Unit price", t.unit_price_cents, t.currency),
@@ -150,7 +151,7 @@ pub fn editTransaction(app: *App, txn: EditTxn) !?EditTxn {
 
 // Keeps the totals computed in `preview` and by the caller within i64.
 fn totalFits(t: EditTxn) bool {
-    const total = std.math.mul(i64, t.unit_price_cents, t.quantity) catch return false;
+    const total = f.lineTotal(t.quantity, t.unit_price_cents) orelse return false;
     const eur = @as(f64, @floatFromInt(total)) * t.exchange_rate;
     return @abs(eur) < 9.0e18;
 }
