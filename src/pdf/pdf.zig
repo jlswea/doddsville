@@ -5,6 +5,7 @@ pub const filters = @import("filters.zig");
 pub const Document = @import("Document.zig");
 pub const CMap = @import("CMap.zig");
 pub const Font = @import("Font.zig");
+pub const text = @import("text.zig");
 
 test {
     _ = @import("ascii85.zig");
@@ -13,4 +14,5 @@ test {
     _ = Document;
     _ = CMap;
     _ = Font;
+    _ = text;
 }
