@@ -4,6 +4,7 @@
 const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
+const ledger = @import("../ledger.zig");
 const lookup = @import("../lookup.zig");
 const ollama = @import("../ollama.zig");
 const paperless = @import("../paperless.zig");
@@ -74,6 +75,21 @@ const Row = struct {
 
     fn hasSecurity(r: Row) bool {
         return r.kind == .buy or r.kind == .sell or r.kind == .dividend;
+    }
+
+    fn entry(r: Row, account: i64) ledger.Entry {
+        return .{
+            .account = account,
+            .kind = @tagName(r.kind),
+            .security = if (r.hasSecurity()) r.security_id else null,
+            .quantity = r.quantity,
+            .unit = r.unit,
+            .total = r.total,
+            .cost = r.cost,
+            .date = r.date,
+            .currency = r.currency,
+            .exchange_rate = r.exchange_rate,
+        };
     }
 };
 
@@ -247,29 +263,8 @@ fn insert(app: *App, rows: []const Row, account_id: i64) ![]const i64 {
     errdefer app.db.exec("ROLLBACK") catch {};
     for (rows) |r| {
         if (r.duplicate_of != null) continue;
-        const kind = @tagName(r.kind);
-        switch (r.kind) {
-            .buy, .sell => try app.db.run(
-                \\INSERT INTO "transaction"
-                \\   (account, security, type, quantity, unit_value, total_value, cost, date, currency, exchange_rate)
-                \\   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            , .{ account_id, r.security_id.?, kind, r.quantity, r.unit, r.total, r.cost, r.date, r.currency, r.exchange_rate }),
-            .dividend => try app.db.run(
-                \\INSERT INTO "transaction"
-                \\   (account, security, type, total_value, cost, date, currency, exchange_rate)
-                \\   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            , .{ account_id, r.security_id.?, kind, r.total, r.cost, r.date, r.currency, r.exchange_rate }),
-            .interest, .deposit, .withdrawal => try app.db.run(
-                \\INSERT INTO "transaction"
-                \\   (account, type, total_value, cost, date, currency, exchange_rate)
-                \\   VALUES (?, ?, ?, ?, ?, ?, ?)
-            , .{ account_id, kind, r.total, r.cost, r.date, r.currency, r.exchange_rate }),
-        }
-        try ids.append(app.a, app.db.lastInsertRowId());
-        // Most securities were seeded without a name; the document has one.
-        if (r.security_id) |sid| if (r.security.len > 0) try app.db.run(
-            \\UPDATE security SET name = ? WHERE id = ? AND TRIM(COALESCE(name, '')) = ''
-        , .{ r.security, sid });
+        try ids.append(app.a, try ledger.insert(app.db, r.entry(account_id)));
+        if (r.security_id) |sid| if (r.security.len > 0) try ledger.fillSecurityName(app.db, sid, r.security);
     }
     try app.db.exec("COMMIT");
     return ids.items;
@@ -356,74 +351,33 @@ fn resolve(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
                 continue;
             }
         }
-        r.duplicate_of = try findDuplicate(app, account_id, r.*);
-        r.held = if (r.kind == .sell) try holdings(app, account_id, r.security_id.?, r.duplicate_of) else null;
+        r.duplicate_of = try ledger.findDuplicate(app.db, r.entry(account_id));
+        r.held = if (r.kind == .sell) try ledger.holdings(app.db, account_id, r.security_id.?, r.duplicate_of) else null;
         i += 1;
     }
 }
 
 fn securityFor(app: *App, r: Row) !?i64 {
     if (r.isin) |isin| {
-        var st = try app.db.prepare("SELECT id FROM security WHERE isin = ? LIMIT 2");
-        defer st.finalize();
-        try st.bindAll(.{isin});
-        if (try st.step()) {
-            const id = st.int(0);
-            if (!try st.step()) return id;
+        if (try ledger.securityByIsin(app.db, isin)) |id| return id;
+        if (r.security.len > 0) {
+            const q = try app.fmt("Security {s} ({s}) is not in the database. Add it? (y/N) ", .{ r.security, isin });
+            if (!std.ascii.eqlIgnoreCase(f.strip(try app.input(q)), "y")) return null;
+            return try ledger.addSecurity(app.db, isin, r.security);
         }
     }
-    if (r.isin) |isin| if (r.security.len > 0) {
-        const q = try app.fmt("Security {s} ({s}) is not in the database. Add it? (y/N) ", .{ r.security, isin });
-        if (std.ascii.eqlIgnoreCase(f.strip(try app.input(q)), "y")) {
-            try app.db.run("INSERT INTO security (isin, name) VALUES (?, ?)", .{ isin, r.security });
-            return app.db.lastInsertRowId();
-        }
-        return null;
-    };
     if (r.security.len > 0) if (try lookup.getOrPromptSecurity(app, r.security)) |s| return s.id;
     return null;
-}
-
-/// Same type, quantity and amount within ten days: earlier records sometimes
-/// carry the value date instead of the trade date.
-fn findDuplicate(app: *App, account_id: i64, r: Row) !?i64 {
-    var st = try app.db.prepare(
-        \\SELECT id FROM "transaction"
-        \\WHERE account = ? AND type = ? AND total_value = ? AND COALESCE(quantity, ?) = ?
-        \\  AND ABS(julianday(date) - julianday(?)) <= 10
-        \\ORDER BY ABS(julianday(date) - julianday(?)) LIMIT 1
-    );
-    defer st.finalize();
-    try st.bindAll(.{ account_id, @tagName(r.kind), r.total, f.quantity_scale, r.quantity, r.date, r.date });
-    return if (try st.step()) st.int(0) else null;
-}
-
-/// Shares held, not counting `except` (the recorded copy of a re-imported sell).
-fn holdings(app: *App, account_id: i64, security_id: i64, except: ?i64) !i64 {
-    var st = try app.db.prepare(
-        \\SELECT COALESCE(SUM(CASE WHEN type = 'buy' THEN quantity WHEN type = 'sell' THEN -quantity ELSE 0 END), 0)
-        \\FROM "transaction" WHERE account = ? AND security = ? AND id IS NOT ?
-    );
-    defer st.finalize();
-    try st.bindAll(.{ account_id, security_id, except });
-    _ = try st.step();
-    return st.int(0);
 }
 
 /// The database name; many securities were seeded with an ISIN only, so the
 /// document's name and then the ISIN stand in.
 fn securityLabel(app: *App, r: Row) ![]const u8 {
-    if (r.security_id) |id| {
-        var st = try app.db.prepare("SELECT name, isin FROM security WHERE id = ?");
-        defer st.finalize();
-        try st.bindAll(.{id});
-        if (try st.step()) {
-            const name = f.strip(st.textRef(0) orelse "");
-            if (name.len > 0) return app.a.dupe(u8, name);
-            if (r.security.len > 0) return r.security;
-            if (st.textRef(1)) |isin| return app.a.dupe(u8, isin);
-        }
-    }
+    if (r.security_id) |id| if (try ledger.security(app.db, app.a, id)) |sec| {
+        if (sec.name.len > 0) return sec.name;
+        if (r.security.len > 0) return r.security;
+        if (sec.isin.len > 0) return sec.isin;
+    };
     return if (r.security.len > 0) r.security else "-";
 }
 
