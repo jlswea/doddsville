@@ -217,14 +217,13 @@ fn statementParse(a: Allocator, pages: []const p.Page, diag: *p.Diag) p.Error!p.
                 pg.lines[li + 1].words[0].x0 >= cols.description_x - 5 and
                 pg.lines[li + 1].words[0].x0 < cols.description_x + 5) pg.lines[li + 1] else null;
 
-            const kind = bookingKind(desc_words, cents, cont);
-            switch (kind) {
-                .buy, .sell => {
+            switch (classify(desc_words, cents, cont)) {
+                .buy, .sell => |b| {
                     const c = cont.?;
                     const qty = p.quantity(c.words[0].text).?;
                     if (qty <= 0) return p.unrecognized(diag, "quantity is not positive");
                     try txns.append(a, .{
-                        .kind = kind,
+                        .kind = if (b == .buy) .buy else .sell,
                         .date = booked,
                         .isin = trailingIsin(c).?,
                         .security = try p.join(a, c.words[2 .. c.words.len - 1]),
@@ -232,7 +231,7 @@ fn statementParse(a: Allocator, pages: []const p.Page, diag: *p.Diag) p.Error!p.
                         .total = @intCast(@abs(cents)),
                     });
                 },
-                .dividend => {
+                .distribution => {
                     const c = cont.?;
                     try txns.append(a, .{
                         .kind = .dividend,
@@ -243,7 +242,7 @@ fn statementParse(a: Allocator, pages: []const p.Page, diag: *p.Diag) p.Error!p.
                     });
                 },
                 .deposit => try txns.append(a, .{ .kind = .deposit, .date = booked, .total = cents }),
-                else => try skipped.append(a, .{ .date = booked, .description = desc, .amount = cents }),
+                .unknown => try skipped.append(a, .{ .date = booked, .description = desc, .amount = cents }),
             }
         }
     }
@@ -261,8 +260,9 @@ fn statementParse(a: Allocator, pages: []const p.Page, diag: *p.Diag) p.Error!p.
     };
 }
 
-/// `.interest` stands for "recognised but not importable" here.
-fn bookingKind(desc: []const p.Word, cents: i64, cont: ?p.Line) p.Kind {
+const Booking = enum { buy, sell, deposit, distribution, unknown };
+
+fn classify(desc: []const p.Word, cents: i64, cont: ?p.Line) Booking {
     const first = desc[0].text;
     const security_line = if (cont) |c| c.words.len >= 4 and std.mem.eql(u8, c.words[1].text, "Stk.") and
         p.quantity(c.words[0].text) != null and trailingIsin(c) != null else false;
@@ -270,8 +270,8 @@ fn bookingKind(desc: []const p.Word, cents: i64, cont: ?p.Line) p.Kind {
     if (std.mem.eql(u8, first, "Verkauf") and cents > 0 and security_line) return .sell;
     if (desc.len == 1 and cents > 0 and (std.mem.eql(u8, first, "Überweisung") or std.mem.eql(u8, first, "Lastschrift"))) return .deposit;
     if (desc.len == 2 and std.mem.eql(u8, first, "Kapitalmaßnahme") and std.mem.eql(u8, desc[1].text, "Ausschüttungen") and
-        cents > 0 and cont != null and cont.?.words.len >= 2 and trailingIsin(cont.?) != null) return .dividend;
-    return .interest;
+        cents > 0 and cont != null and cont.?.words.len >= 2 and trailingIsin(cont.?) != null) return .distribution;
+    return .unknown;
 }
 
 /// "Datum <date>" in the letter head.
