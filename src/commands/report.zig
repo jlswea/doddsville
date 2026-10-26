@@ -186,10 +186,10 @@ fn holdings(c: Ctx) !void {
         if (!any) {
             try app.print("\n{s}Portfolio Holdings:{s}\n", .{ f.BOLD, f.RESET });
             try app.print("{s} {s} {s} {s} {s}\n", .{
-                try f.left(app.a, "Account", 20), try f.left(app.a, "Security", 25), try f.right(app.a, "Shares", 8),
+                try f.left(app.a, "Account", 20),   try f.left(app.a, "Security", 25),    try f.right(app.a, "Shares", 10),
                 try f.right(app.a, "Avg Cost", 12), try f.right(app.a, "Total Cost", 14),
             });
-            try app.line(f.rep("-", 85));
+            try app.line(f.rep("-", 87));
             any = true;
         }
         const account = (try st.text(app.a, 0)) orelse "None";
@@ -199,22 +199,30 @@ fn holdings(c: Ctx) !void {
         const total_cost = st.int(4);
         const shares = bought - sold;
         if (shares <= 0) continue;
-        const avg = if (bought > 0) @divFloor(total_cost, bought) else 0;
+        const avg = share(total_cost, f.quantity_scale, bought);
         if (current == null or !std.mem.eql(u8, current.?, account)) {
             if (current != null) try app.line("");
             current = account;
         }
         try app.print("{s} {s} {s} {s} {s}\n", .{
-            try f.left(app.a, account, 20), try f.left(app.a, security, 25), try f.right(app.a, try f.int(app.a, shares), 8),
-            try money(app, avg, 12),        try money(app, avg * shares, 14),
+            try f.left(app.a, account, 20), try f.left(app.a, security, 25),                       try f.right(app.a, try f.quantity(app.a, shares), 10),
+            try money(app, avg, 12),        try money(app, share(total_cost, shares, bought), 14),
         });
     }
     if (!any) try app.line("\nNo holdings found.");
 }
 
 fn realized(bought: i64, sold: i64, buy_value: i64, sell_value: i64) i64 {
-    if (bought > 0 and sold > 0) return sell_value - @divFloor(buy_value, bought) * sold;
+    if (bought > 0 and sold > 0) return sell_value - share(buy_value, sold, bought);
     return 0;
+}
+
+/// value × part / whole, floored, without intermediate overflow. Quantities
+/// are millionths, so a per-share average would truncate to nothing.
+fn share(value: i64, part: i64, whole: i64) i64 {
+    if (whole <= 0) return 0;
+    const q = @divFloor(@as(i128, value) * part, whole);
+    return std.math.cast(i64, q) orelse if (q < 0) std.math.minInt(i64) else std.math.maxInt(i64);
 }
 
 fn performance(c: Ctx) !void {
@@ -264,8 +272,8 @@ fn performance(c: Ctx) !void {
         total_dividends += dividends;
         total_fees += fees;
         try app.print("{s} {s} {s} {s} {s} {s} {s}\n", .{
-            try f.left(app.a, security, 25),       try f.right(app.a, try f.int(app.a, bought), 8), try f.right(app.a, try f.int(app.a, sold), 8),
-            try money(app, buy_value, 12),         try money(app, sell_value, 12),                  try f.right(app.a, try f.centsColored(app.a, gain), 23),
+            try f.left(app.a, security, 25), try f.right(app.a, try f.quantity(app.a, bought), 8), try f.right(app.a, try f.quantity(app.a, sold), 8),
+            try money(app, buy_value, 12),   try money(app, sell_value, 12),                       try f.right(app.a, try f.centsColored(app.a, gain), 23),
             try money(app, dividends, 12),
         });
     }
@@ -348,10 +356,8 @@ fn summary(c: Ctx) !void {
         if (try st.step()) {
             const total_shares = st.optInt(0) orelse 0;
             const buy_total = st.optInt(1) orelse 0;
-            var bought_qty = st.optInt(2) orelse 1;
-            if (bought_qty == 0) bought_qty = 1; // Python: `row[2] or 1`
-            const avg = if (bought_qty > 0) @divFloor(buy_total, bought_qty) else 0;
-            holdings_at_cost = if (total_shares > 0) avg * total_shares else 0;
+            const bought_qty = st.optInt(2) orelse 0;
+            holdings_at_cost = if (total_shares > 0) share(buy_total, total_shares, bought_qty) else 0;
         }
     }
 
@@ -400,4 +406,11 @@ fn summary(c: Ctx) !void {
 
     try app.print("\n  {s}Total Portfolio Value:     {s}{s}\n", .{ f.BOLD, try money(app, cash_balance - total_fees + holdings_at_cost, 14), f.RESET });
     try app.print("{s}{s}{s}\n\n", .{ f.BOLD, rule, f.RESET });
+}
+
+test "share keeps precision with millionths" {
+    // 0.5 of 1.5 shares bought for 30.00 cost 10.00.
+    try std.testing.expectEqual(@as(i64, 1000), share(3000, 500_000, 1_500_000));
+    try std.testing.expectEqual(@as(i64, 0), share(3000, 1, 0));
+    try std.testing.expectEqual(@as(i64, 2000), realized(1_500_000, 500_000, 3000, 3000));
 }

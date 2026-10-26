@@ -43,7 +43,7 @@ pub fn run(app: *App, txn_id: i64) !void {
         .type = (try st.text(a, 0)) orelse "",
         .date = date,
         .security = security_name orelse "",
-        .quantity = nz.int(st.optInt(3), 1),
+        .quantity = nz.int(st.optInt(3), f.quantity_scale),
         .unit_price_cents = nz.int(st.optInt(2), 0),
         .cost_cents = nz.int(st.optInt(4), 0),
         .currency = if (currency.len > 0) currency else "EUR",
@@ -75,8 +75,13 @@ pub fn run(app: *App, txn_id: i64) !void {
     } else new_security_id = null;
 
     const new_unit = result.unit_price_cents;
-    const new_qty = if (result.quantity == 0) 1 else result.quantity;
-    const new_total = new_unit * new_qty;
+    const new_qty = if (result.quantity == 0) f.quantity_scale else result.quantity;
+    // Imported totals are exact booking amounts; recompute only what was edited.
+    const old_total = st.optInt(1) orelse 0;
+    const new_total = if (new_unit == txn.unit_price_cents and new_qty == txn.quantity)
+        old_total
+    else
+        f.lineTotal(new_qty, new_unit).?;
 
     try app.db.exec("BEGIN");
     errdefer app.db.exec("ROLLBACK") catch {};

@@ -100,7 +100,12 @@ fn m004(db: sqlite.Db) !void {
     try db.exec("DROP TABLE IF EXISTS \"index\"");
 }
 
-const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004 };
+/// Quantities move to millionths of a share, so savings-plan fractions fit.
+fn m005(db: sqlite.Db) !void {
+    try db.exec("UPDATE \"transaction\" SET quantity = quantity * 1000000 WHERE quantity IS NOT NULL");
+}
+
+const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004, m005 };
 
 pub fn run(db: sqlite.Db) !void {
     const current = try version(db);
@@ -119,9 +124,33 @@ test "fresh database migrates to the current schema" {
     const db = try sqlite.Db.open(":memory:");
     defer db.close();
     try run(db);
-    try std.testing.expectEqual(@as(i64, 4), try version(db));
+    try std.testing.expectEqual(@as(i64, 5), try version(db));
     try std.testing.expect(try hasColumn(db, "transaction", "security"));
     try std.testing.expect(try hasColumn(db, "transaction", "exchange_rate"));
     try std.testing.expect(try hasColumn(db, "security", "type"));
     try run(db); // idempotent
+}
+
+test "v5 scales existing quantities to millionths once" {
+    const db = try sqlite.Db.open(":memory:");
+    defer db.close();
+    try db.exec("PRAGMA user_version = 0");
+    try db.exec("BEGIN");
+    try m001(db);
+    try m002(db);
+    try m003(db);
+    try m004(db);
+    try db.exec("PRAGMA user_version = 4");
+    try db.exec("COMMIT");
+    try db.exec("INSERT INTO account (name) VALUES ('A')");
+    try db.exec("INSERT INTO \"transaction\" (account, type, quantity, unit_value, total_value, date) VALUES (1, 'buy', 3, 100, 300, '2024-01-01')");
+    try db.exec("INSERT INTO \"transaction\" (account, type, total_value, date) VALUES (1, 'deposit', 500, '2024-01-01')");
+    try run(db);
+    try run(db);
+    var st = try db.prepare("SELECT quantity FROM \"transaction\" ORDER BY id");
+    defer st.finalize();
+    _ = try st.step();
+    try std.testing.expectEqual(@as(i64, 3_000_000), st.int(0));
+    _ = try st.step();
+    try std.testing.expect(st.isNull(0));
 }

@@ -339,9 +339,10 @@ fn parseCommand(app: *App, command: []const u8, rest: []const []const u8) !Actio
         switch (kind) {
             .buy, .sell => {
                 a.security = p.pos[0];
-                a.quantity = try intArg(app, spec.prog, "quantity", p.pos[1]);
+                a.quantity = f.parseQuantity(f.strip(p.pos[1])) catch
+                    return usage(app, spec.prog, "argument quantity: invalid quantity: '{s}' (up to six decimals)", .{p.pos[1]});
                 a.amount = try centsArg(app, spec.prog, "price", p.pos[2]);
-                _ = std.math.mul(i64, a.quantity, a.amount) catch
+                _ = f.lineTotal(a.quantity, a.amount) orelse
                     return usage(app, spec.prog, "argument price: quantity * price is too large", .{});
             },
             .dividend => {
@@ -463,4 +464,5 @@ test {
     _ = @import("pdf/CMap.zig");
     _ = @import("pdf/pdf.zig");
     _ = @import("parsers/parsers.zig");
+    _ = @import("commands/report.zig");
 }
