@@ -437,4 +437,5 @@ test {
     _ = @import("lookup.zig");
     _ = @import("ledger.zig");
     _ = @import("Config.zig");
+    _ = @import("pdf/syntax.zig");
 }
