@@ -129,6 +129,45 @@ pub fn int(a: Allocator, v: i64) ![]const u8 {
     return std.fmt.allocPrint(a, "{d}", .{v});
 }
 
+/// Quantities are stored in millionths of a share.
+pub const quantity_scale = 1_000_000;
+
+/// "12", "0.57", "-1.000001": trailing zeros dropped.
+pub fn quantity(a: Allocator, micro: i64) ![]const u8 {
+    const abs: u64 = @abs(micro);
+    const sign: []const u8 = if (micro < 0) "-" else "";
+    const whole = abs / quantity_scale;
+    var frac = abs % quantity_scale;
+    if (frac == 0) return std.fmt.allocPrint(a, "{s}{d}", .{ sign, whole });
+    var digits: usize = 6;
+    while (frac % 10 == 0) : (digits -= 1) frac /= 10;
+    return std.fmt.allocPrint(a, "{s}{d}.{[3]d:0>[2]}", .{ sign, whole, digits, frac });
+}
+
+/// "12", "0.57" or "0,57" (at most six decimals) to millionths.
+pub fn parseQuantity(value: []const u8) ParseError!i64 {
+    const sep = std.mem.indexOfAny(u8, value, ".,");
+    const whole_s = if (sep) |i| value[0..i] else value;
+    const frac_s = if (sep) |i| value[i + 1 ..] else "";
+    if (whole_s.len == 0 or (sep != null and frac_s.len == 0) or frac_s.len > 6) return error.InvalidArgument;
+    for (whole_s) |ch| if (!std.ascii.isDigit(ch)) return error.InvalidArgument;
+    for (frac_s) |ch| if (!std.ascii.isDigit(ch)) return error.InvalidArgument;
+    const whole = std.fmt.parseInt(i64, whole_s, 10) catch return error.InvalidArgument;
+    var frac: i64 = if (frac_s.len > 0) std.fmt.parseInt(i64, frac_s, 10) catch unreachable else 0;
+    for (frac_s.len..6) |_| frac *= 10;
+    const scaled = std.math.mul(i64, whole, quantity_scale) catch return error.InvalidArgument;
+    return std.math.add(i64, scaled, frac) catch error.InvalidArgument;
+}
+
+/// Total in cents for `micro` shares at `unit` cents each, rounded half away
+/// from zero. Null when it does not fit in i64.
+pub fn lineTotal(micro: i64, unit: i64) ?i64 {
+    const product = @as(i128, micro) * unit;
+    const half: i128 = quantity_scale / 2;
+    const rounded = if (product >= 0) @divTrunc(product + half, quantity_scale) else @divTrunc(product - half, quantity_scale);
+    return std.math.cast(i64, rounded);
+}
+
 /// Python repr() of a float, e.g. 1.0, 1.0856.
 pub fn pyFloat(a: Allocator, v: f64) ![]const u8 {
     const s = try std.fmt.allocPrint(a, "{d}", .{v});
@@ -210,4 +249,24 @@ pub fn rep(comptime s: []const u8, comptime n: usize) *const [s.len * n]u8 {
 test "rep" {
     try testing.expectEqualStrings("---", rep("-", 3));
     try testing.expectEqualStrings("══", rep("═", 2));
+}
+
+test "quantities in millionths" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    try testing.expectEqualStrings("12", try quantity(a, 12_000_000));
+    try testing.expectEqualStrings("0.57", try quantity(a, 570_000));
+    try testing.expectEqualStrings("1.000001", try quantity(a, 1_000_001));
+    try testing.expectEqualStrings("-3.5", try quantity(a, -3_500_000));
+    try testing.expectEqual(@as(i64, 12_000_000), try parseQuantity("12"));
+    try testing.expectEqual(@as(i64, 570_000), try parseQuantity("0.57"));
+    try testing.expectEqual(@as(i64, 570_000), try parseQuantity("0,57"));
+    try testing.expectEqual(@as(i64, 1), try parseQuantity("0.000001"));
+    for ([_][]const u8{ "", "1.", ".5", "1.0000001", "-1", "1e3", "1.2.3" }) |bad|
+        try testing.expectError(error.InvalidArgument, parseQuantity(bad));
+    try testing.expectEqual(@as(?i64, 118080), lineTotal(12_000_000, 9840));
+    try testing.expectEqual(@as(?i64, 56), lineTotal(570_000, 98));
+    try testing.expectEqual(@as(?i64, -56), lineTotal(-570_000, 98));
+    try testing.expectEqual(@as(?i64, null), lineTotal(std.math.maxInt(i64), 10_000_000));
 }
