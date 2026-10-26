@@ -439,4 +439,5 @@ test {
     _ = @import("Config.zig");
     _ = @import("pdf/syntax.zig");
     _ = @import("pdf/ascii85.zig");
+    _ = @import("pdf/filters.zig");
 }
