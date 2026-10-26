@@ -482,4 +482,5 @@ test {
     _ = @import("parsers/parsers.zig");
     _ = @import("commands/report.zig");
     _ = @import("commands/import.zig");
+    _ = @import("importer.zig");
 }
