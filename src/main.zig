@@ -441,4 +441,5 @@ test {
     _ = @import("pdf/ascii85.zig");
     _ = @import("pdf/filters.zig");
     _ = @import("pdf/Document.zig");
+    _ = @import("pdf/CMap.zig");
 }
