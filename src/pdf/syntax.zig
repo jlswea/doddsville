@@ -215,6 +215,11 @@ pub const Dict = struct {
         for (d.keys, d.values) |k, v| if (std.mem.eql(u8, k, key)) return v;
         return null;
     }
+
+    pub fn hasName(d: Dict, key: []const u8, n: []const u8) bool {
+        const v = d.get(key) orelse return false;
+        return v.isName(n);
+    }
 };
 
 pub const Parser = struct {
