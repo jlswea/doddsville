@@ -92,7 +92,7 @@ const top_help =
     \\  report    Reports (summary, balance, cashflow, holdings, performance)
     \\  doc       Manage documents linked to transactions (add, edit)
     \\  config    Manage CLI configuration (show, check)
-    \\  import    Import transactions from a broker PDF (only --raw so far)
+    \\  import    Import transactions from a broker PDF
     \\
     \\  sensor: not ported yet; use the Python CLI (pixi run python cli.py ...)
     \\
@@ -238,14 +238,12 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
     // `config` works without a database.
     if (eql(command, "config")) return configCommand(app, rest);
 
-    if (eql(command, "import")) return importCommand(app, rest);
-
     if (eql(command, "sensor")) {
         try app.print("{s}'dv {s}' is not ported to Zig yet.{s} Use the Python CLI for now:\n  pixi run python cli.py {s} ...\n", .{ f.YELLOW, command, f.RESET, command });
         return 1;
     }
 
-    const known = [_][]const u8{ "account", "list", "add", "edit", "report", "doc" };
+    const known = [_][]const u8{ "account", "list", "add", "edit", "report", "doc", "import" };
     var is_known = false;
     for (known) |k| if (eql(k, command)) {
         is_known = true;
@@ -254,6 +252,10 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
 
     // Parse/validate arguments before touching the database (argparse order).
     const action = try parseCommand(app, command, rest);
+    if (action == .import_raw) {
+        try import_cmd.raw(app, action.import_raw);
+        return 0;
+    }
 
     const db_path = db_flag orelse app.config.db;
     app.db = try sqlite.Db.open(try app.a.dupeSentinel(u8, db_path, 0));
@@ -274,6 +276,8 @@ const Action = union(enum) {
     report: struct { kind: report_cmd.Kind, account: ?[]const u8, from: ?f.Date, to: ?f.Date },
     doc_add: struct { txn: i64, docs: []const []const u8 },
     doc_edit: i64,
+    import_raw: []const u8,
+    import_pdf: import_cmd.Options,
 };
 
 fn subcommand(app: *App, prog: []const u8, rest: []const []const u8, comptime choices: []const []const u8) ![]const u8 {
@@ -391,6 +395,29 @@ fn parseCommand(app: *App, command: []const u8, rest: []const []const u8) !Actio
         const p = try parse(app, .{ .prog = "dv doc edit", .help = "Edit metadata of a Paperless document", .positionals = &.{.{ .name = "doc_id", .help = "Paperless document ID to edit" }} }, rest[1..]);
         return .{ .doc_edit = try intArg(app, "dv doc edit", "doc_id", p.pos[0]) };
     }
+
+    if (eql(command, "import")) {
+        const p = try parse(app, .{
+            .prog = "dv import",
+            .help = "Import transactions from a broker PDF. Parsers: scalable_trade, scalable_statement.",
+            .positionals = &.{.{ .name = "pdf_file", .help = "Path to the PDF file to import" }},
+            .options = &.{
+                .{ .long = "--account", .short = 'a', .dest = "account", .metavar = "ACCOUNT", .help = "Target account name (will prompt if not specified)" },
+                .{ .long = "--dry-run", .dest = "dry_run", .kind = .flag, .help = "Parse and preview only, don't insert transactions" },
+                .{ .long = "--no-upload", .dest = "no_upload", .kind = .flag, .help = "Don't upload PDF to paperless after import" },
+                .{ .long = "--raw", .dest = "raw", .kind = .flag, .help = "Show the extracted text and exit (for debugging)" },
+                .{ .long = "--parser", .dest = "parser", .metavar = "PARSER", .help = "Use this parser instead of detecting one" },
+            },
+        }, rest);
+        if (p.flag("raw")) return .{ .import_raw = p.pos[0] };
+        return .{ .import_pdf = .{
+            .pdf_file = p.pos[0],
+            .account = p.get("account"),
+            .parser = p.get("parser"),
+            .dry_run = p.flag("dry_run"),
+            .no_upload = p.flag("no_upload"),
+        } };
+    }
     unreachable;
 }
 
@@ -419,22 +446,9 @@ fn execute(app: *App, action: Action) !void {
         }),
         .doc_add => |d| try doc_cmd.add(app, d.txn, d.docs),
         .doc_edit => |id| try doc_cmd.edit(app, id),
+        .import_raw => unreachable,
+        .import_pdf => |o| try import_cmd.run(app, o),
     }
-}
-
-fn importCommand(app: *App, rest: []const []const u8) !u8 {
-    const p = try parse(app, .{
-        .prog = "dv import",
-        .help = "Import transactions from a broker PDF.",
-        .positionals = &.{.{ .name = "pdf_file", .help = "Path to the PDF file to import" }},
-        .options = &.{.{ .long = "--raw", .dest = "raw", .kind = .flag, .help = "Show the extracted text and exit (for debugging)" }},
-    }, rest);
-    if (!p.flag("raw")) {
-        try app.print("{s}Only 'dv import --raw' is ported to Zig so far.{s} Use the Python CLI for now:\n  pixi run python cli.py import ...\n", .{ f.YELLOW, f.RESET });
-        return 1;
-    }
-    try import_cmd.raw(app, p.pos[0]);
-    return 0;
 }
 
 fn configCommand(app: *App, rest: []const []const u8) !u8 {
@@ -465,4 +479,5 @@ test {
     _ = @import("pdf/pdf.zig");
     _ = @import("parsers/parsers.zig");
     _ = @import("commands/report.zig");
+    _ = @import("commands/import.zig");
 }
