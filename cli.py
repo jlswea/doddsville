@@ -1,5 +1,6 @@
 import argparse
 import sqlite3
+import sys
 from datetime import datetime
 
 from commands import (
@@ -14,7 +15,7 @@ from commands import (
     handle_sensor,
 )
 from config import DEFAULT_DB, load_config
-from migrations import run_migrations
+from migrations import run_migrations, schema_is_newer
 from formatting import (
     BOLD,
     GREEN,
@@ -424,6 +425,9 @@ def main() -> None:
 
     conn = sqlite3.connect(db_path)
     run_migrations(conn)
+    if schema_is_newer(conn) and args.command != "sensor":
+        print(f"{db_path} was migrated by the Zig dv; use it for '{args.command}'.")
+        sys.exit(1)
     cur = conn.cursor()
     cur.execute("PRAGMA foreign_keys = ON;")
 
