@@ -9,7 +9,6 @@ from commands import (
     handle_config,
     handle_doc,
     handle_edit,
-    handle_import,
     handle_list,
     handle_report,
     handle_sensor,
@@ -317,50 +316,6 @@ def main() -> None:
     config_subcommands.add_parser("check", help="Check paperless-ngx API connection")
 
     # --------------------------------------------------------------------------
-    #                           COMMAND: "import"
-    # --------------------------------------------------------------------------
-
-    parser_import = main_commands.add_parser(
-        "import", help="Import transactions from a PDF document using AI parsing."
-    )
-    parser_import.add_argument(
-        "pdf_file", type=str, nargs="?", help="Path to the PDF file to import"
-    )
-    parser_import.add_argument(
-        "--account",
-        "-a",
-        type=str,
-        help="Target account name (will prompt if not specified)",
-    )
-    parser_import.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Parse and preview only, don't insert transactions",
-    )
-    parser_import.add_argument(
-        "--no-upload",
-        action="store_true",
-        help="Don't upload PDF to paperless after import",
-    )
-    parser_import.add_argument(
-        "--model",
-        type=str,
-        help="Override Ollama model (default from config or mistral)",
-    )
-    parser_import.add_argument(
-        "--raw", action="store_true", help="Show raw extracted text (for debugging)"
-    )
-    parser_import.add_argument(
-        "--parser",
-        "-p",
-        type=str,
-        help="Force a specific parser (e.g., 'scalable', 'llm')",
-    )
-    parser_import.add_argument(
-        "--list-parsers", action="store_true", help="List available parsers and exit"
-    )
-
-    # --------------------------------------------------------------------------
     #                           COMMAND: "sensor"
     # --------------------------------------------------------------------------
 
@@ -437,8 +392,6 @@ def main() -> None:
         handle_doc(args, config, conn, cur)
     elif args.command == "edit":
         handle_edit(args, config, conn, cur)
-    elif args.command == "import":
-        handle_import(args, config, conn, cur)
     elif args.command == "list":
         handle_list(args, config, cur)
     elif args.command == "add":
