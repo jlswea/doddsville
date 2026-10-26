@@ -5,6 +5,7 @@ const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
 const lookup = @import("../lookup.zig");
+const ollama = @import("../ollama.zig");
 const paperless = @import("../paperless.zig");
 const parsers = @import("../parsers/parsers.zig");
 const pdf = @import("../pdf/pdf.zig");
@@ -18,6 +19,7 @@ pub const Options = struct {
     pdf_file: []const u8,
     account: ?[]const u8 = null,
     parser: ?[]const u8 = null,
+    model: ?[]const u8 = null,
     dry_run: bool = false,
     no_upload: bool = false,
 };
@@ -64,6 +66,7 @@ const Row = struct {
     total: i64,
     cost: i64,
     currency: []const u8,
+    exchange_rate: f64,
     /// Existing transaction that looks like the same booking.
     duplicate_of: ?i64 = null,
     /// Shares held before this import, for sells.
@@ -86,6 +89,7 @@ fn toRow(app: *App, t: parsers.Txn) !Row {
         .total = t.total,
         .cost = t.cost,
         .currency = try app.a.dupe(u8, &t.currency),
+        .exchange_rate = t.exchange_rate,
     };
 }
 
@@ -98,23 +102,7 @@ fn unitFromTotal(total: i64, quantity: i64) i64 {
 pub fn run(app: *App, opts: Options) !void {
     const pages = (try extract(app, opts.pdf_file)) orelse return error.Reported;
 
-    const parser = if (opts.parser) |name| parsers.byName(name) orelse {
-        try app.print("{s}Unknown parser '{s}'. Available: {s}{s}\n", .{ f.RED, name, try parserNames(app), f.RESET });
-        return error.Reported;
-    } else parsers.match(pages) orelse {
-        try app.print("{s}No parser recognises this document.{s}\n", .{ f.YELLOW, f.RESET });
-        try app.line("Run with --raw to see the extracted text.");
-        return error.Reported;
-    };
-    var diag: parsers.Diag = .{};
-    const result = parser.parse(app.a, pages, &diag) catch |err| switch (err) {
-        error.Unrecognized => {
-            try app.print("{s}The {s} parser could not read this document: {s}.{s}\n", .{ f.YELLOW, parser.name, diag.reason, f.RESET });
-            try app.line("Run with --raw to see the extracted text.");
-            return error.Reported;
-        },
-        else => return err,
-    };
+    const result = (try parse(app, pages, opts)) orelse return error.Reported;
     try app.print("  {s}✓{s} Parsed with {s} parser\n", .{ f.GREEN, f.RESET, result.parser });
     try printSkipped(app, result.skipped);
     if (result.txns.len == 0) {
@@ -264,18 +252,18 @@ fn insert(app: *App, rows: []const Row, account_id: i64) ![]const i64 {
             .buy, .sell => try app.db.run(
                 \\INSERT INTO "transaction"
                 \\   (account, security, type, quantity, unit_value, total_value, cost, date, currency, exchange_rate)
-                \\   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0)
-            , .{ account_id, r.security_id.?, kind, r.quantity, r.unit, r.total, r.cost, r.date, r.currency }),
+                \\   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            , .{ account_id, r.security_id.?, kind, r.quantity, r.unit, r.total, r.cost, r.date, r.currency, r.exchange_rate }),
             .dividend => try app.db.run(
                 \\INSERT INTO "transaction"
                 \\   (account, security, type, total_value, cost, date, currency, exchange_rate)
-                \\   VALUES (?, ?, ?, ?, ?, ?, ?, 1.0)
-            , .{ account_id, r.security_id.?, kind, r.total, r.cost, r.date, r.currency }),
+                \\   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            , .{ account_id, r.security_id.?, kind, r.total, r.cost, r.date, r.currency, r.exchange_rate }),
             .interest, .deposit, .withdrawal => try app.db.run(
                 \\INSERT INTO "transaction"
                 \\   (account, type, total_value, cost, date, currency, exchange_rate)
-                \\   VALUES (?, ?, ?, ?, ?, ?, 1.0)
-            , .{ account_id, kind, r.total, r.cost, r.date, r.currency }),
+                \\   VALUES (?, ?, ?, ?, ?, ?, ?)
+            , .{ account_id, kind, r.total, r.cost, r.date, r.currency, r.exchange_rate }),
         }
         try ids.append(app.a, app.db.lastInsertRowId());
         // Most securities were seeded without a name; the document has one.
@@ -285,6 +273,55 @@ fn insert(app: *App, rows: []const Row, account_id: i64) ![]const i64 {
     }
     try app.db.exec("COMMIT");
     return ids.items;
+}
+
+/// Deterministic parsers first; the LLM only when none can read the document
+/// and the user agrees (or asked for it with --parser llm).
+fn parse(app: *App, pages: []const pdf.Page, opts: Options) !?parsers.Result {
+    const forced_llm = if (opts.parser) |n| std.mem.eql(u8, n, parsers.llm.name) else false;
+    if (!forced_llm) {
+        const parser = if (opts.parser) |n| parsers.byName(n) orelse {
+            try app.print("{s}Unknown parser '{s}'. Available: {s}, {s}{s}\n", .{ f.RED, n, try parserNames(app), parsers.llm.name, f.RESET });
+            return null;
+        } else parsers.match(pages);
+        if (parser) |pr| {
+            var diag: parsers.Diag = .{};
+            if (pr.parse(app.a, pages, &diag)) |r| return r else |err| switch (err) {
+                error.Unrecognized => try app.print("{s}The {s} parser could not read this document: {s}.{s}\n", .{ f.YELLOW, pr.name, diag.reason, f.RESET }),
+                else => return err,
+            }
+        } else try app.print("{s}No parser recognises this document.{s}\n", .{ f.YELLOW, f.RESET });
+        if (opts.parser != null) return null;
+    }
+
+    var client: ollama.Client = .init(app, opts.model);
+    if (!forced_llm) {
+        const q = try app.fmt("Let the local LLM ({s} at {s}) try instead? (y/N) ", .{ client.model, client.url });
+        if (!std.ascii.eqlIgnoreCase(f.strip(try app.input(q)), "y")) {
+            try app.line("Run with --raw to see the extracted text.");
+            return null;
+        }
+    }
+    try app.print("Asking {s}, this can take a minute...\n", .{client.model});
+    const answer = client.generate(try parsers.llm.prompt(app.a, pages)) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            try app.print("{s}{s}{s}\n", .{ f.RED, client.last_error, f.RESET });
+            return null;
+        },
+    };
+    var rejected: usize = 0;
+    var diag: parsers.Diag = .{};
+    const r = parsers.llm.parseAnswer(app.a, answer, &rejected, &diag) catch |err| switch (err) {
+        error.Unrecognized => {
+            try app.print("{s}{s}. Try again or another --model.{s}\n", .{ f.RED, diag.reason, f.RESET });
+            return null;
+        },
+        else => return err,
+    };
+    try app.print("{s}⚠ These come from the LLM, not a parser: check every field.{s}\n", .{ f.YELLOW, f.RESET });
+    if (rejected > 0) try app.print("{s}  {d} transaction(s) from the LLM were invalid and dropped.{s}\n", .{ f.YELLOW, rejected, f.RESET });
+    return r;
 }
 
 fn parserNames(app: *App) ![]const u8 {
@@ -444,7 +481,7 @@ fn editRows(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
             .unit_price_cents = r.unit,
             .cost_cents = r.cost,
             .currency = r.currency,
-            .exchange_rate = 1.0,
+            .exchange_rate = r.exchange_rate,
         };
         const after = (try ui.editTransaction(app, before)) orelse {
             _ = rows.orderedRemove(n - 1);
@@ -454,6 +491,7 @@ fn editRows(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
         r.date = after.date;
         r.cost = after.cost_cents;
         r.currency = after.currency;
+        r.exchange_rate = after.exchange_rate;
         if (after.quantity != r.quantity or after.unit_price_cents != r.unit) {
             r.quantity = after.quantity;
             r.unit = after.unit_price_cents;
