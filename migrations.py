@@ -119,6 +119,12 @@ def _migration_004(conn: sqlite3.Connection) -> None:
 _MIGRATIONS = [_migration_001, _migration_002, _migration_003, _migration_004]
 
 
+def schema_is_newer(conn: sqlite3.Connection) -> bool:
+    """True once the Zig dv has migrated past what this code understands
+    (v5 stores quantities in millionths of a share)."""
+    return _get_version(conn) > len(_MIGRATIONS)
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Run any pending migrations and bump user_version after each."""
     current = _get_version(conn)

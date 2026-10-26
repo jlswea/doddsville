@@ -533,6 +533,13 @@ class DoddsTUI(App):
 
 
 def main():
+    from migrations import schema_is_newer
+
+    conn = sqlite3.connect("data.db")
+    newer = schema_is_newer(conn)
+    conn.close()
+    if newer:
+        raise SystemExit("data.db was migrated by the Zig dv; the TUI cannot read it anymore.")
     app = DoddsTUI()
     app.run()
 
