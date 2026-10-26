@@ -56,16 +56,50 @@ src/
 ├── format.zig       money/date parsing + formatting (formatting.py)
 ├── lookup.zig       account/security resolution (db.py)
 ├── paperless.zig    paperless-ngx API via std.http.Client (paperless.py)
+├── ollama.zig       local Ollama API, the import fallback
 ├── ui.zig           interactive editors (ui.py, edit parts)
-└── commands/        account, add, list, edit, report, doc, config
+├── pdf/             minimal PDF reader: objects, xref, filters, fonts, text, layout
+├── parsers/         deterministic broker parsers (Scalable) + LLM answer validation
+└── commands/        account, add, list, edit, report, doc, config, import
 ```
 
 Intentional differences: `dv list` shows `-` instead of `None` for cash transactions;
 `dv --version` reports `doddsville@0.1.0`.
 
+Quantities are stored in millionths of a share (schema v5), so savings-plan fractions
+like `0.571234` fit; `dv add buy` accepts them with `.` or `,`. The Python CLI refuses
+databases at v5 except for `sensor`, and the TUI refuses them entirely.
+
+### PDF import
+
+```bash
+dv import statement.pdf -a "Scalable Broker"   # parse, preview, confirm, insert, upload
+dv import statement.pdf --dry-run             # parse and preview only
+dv import statement.pdf --no-upload           # skip Paperless
+dv import statement.pdf --raw                 # show the extracted text
+dv import statement.pdf --parser llm --model llama3.2
+```
+
+1. `src/pdf` extracts positioned words (no pdfplumber, no external tools).
+2. A deterministic parser claims the document and reads it: Scalable
+   Wertpapierabrechnungen (buy/sell) and Kontoauszüge (savings-plan buys, deposits,
+   distributions). Parsers refuse documents that fail their own checks: ISIN check
+   digits, Kurs × Stück = Kurswert, and statements must reconcile with the opening and
+   closing Kontostand.
+3. Only if no parser can read the document, `dv` offers to ask a local Ollama model
+   (`.ollama = .{ .url = ..., .model = ... }` in `config.zon`, defaults
+   `http://localhost:11434` and `mistral`). Its answer is validated like any other input.
+4. Securities are matched by ISIN (and can be created from the document), likely
+   duplicates of recorded transactions are skipped, and sells beyond the holdings are
+   flagged. Everything is previewed and editable before it is written.
+5. The PDF is uploaded to Paperless and linked to the new transactions.
+
+Bookings without a matching transaction type (e.g. tax refunds on a Kontoauszug) are
+listed but not imported.
+
 ---
 
-## Python CLI (legacy, still needed for import/sensor/TUI)
+## Python CLI (legacy, still needed for sensor and the TUI on pre-v5 databases)
 
 ## Setup
 
@@ -211,55 +245,6 @@ Documents are shown as clickable URLs in `dv list` output.
 
 When documents are linked to transactions (via `dv add --doc`, `dv doc add`, or `dv import`), a `dv_transaction_id` custom field is automatically set on the Paperless document containing the linked transaction ID(s) as a comma-separated string (e.g. `"1,2,3"`). This allows navigating from Paperless back to the corresponding `dv` transactions. The custom field is created automatically on first use. If multiple transactions reference the same document, the IDs are merged.
 
-## PDF Import
-
-Import transactions from bank/broker PDF statements using AI-powered parsing with a local Ollama LLM.
-
-**Prerequisites:**
-
-- [Ollama](https://ollama.com/) running locally
-- A model installed (e.g., `ollama pull mistral`)
-
-**Setup:**
-
-```bash
-# Configure Ollama (optional, defaults shown)
-pixi run dv config set ollama_url http://localhost:11434
-pixi run dv config set ollama_model mistral
-```
-
-**Import transactions:**
-
-```bash
-# Basic import
-pixi run dv import statement.pdf -a "Scalable Broker"
-
-# Preview without inserting (dry run)
-pixi run dv import statement.pdf --dry-run
-
-# Import without uploading to paperless
-pixi run dv import statement.pdf -a "Broker" --no-upload
-
-# Use a different model
-pixi run dv import statement.pdf --model llama3.2
-
-# Debug: view extracted text
-pixi run dv import statement.pdf --raw
-```
-
-**How it works:**
-
-1. Extracts text and tables from the PDF using pdfplumber
-2. Sends the text to a local Ollama LLM with a structured prompt
-3. LLM returns JSON array of parsed transactions
-4. Validates and previews the transactions
-5. On confirmation, inserts into database
-6. Optionally uploads PDF to paperless and links to all created transactions
-
-**Supported transaction types:** buy, sell, dividend, interest, deposit, withdrawal
-
-**Note:** The LLM handles German (DD.MM.YYYY) and ISO (YYYY-MM-DD) date formats, and recognizes German keywords (Kauf, Verkauf, Dividende, Zinsen, Einzahlung, Auszahlung).
-
 ### Index Parsing
 
 Parse all indices provided in `init.sql` and add their companies to the `company` table:
@@ -284,20 +269,15 @@ doddsville/
 ├── formatting.py       # ANSI codes, currency formatting, validators
 ├── migrations.py       # Schema migrations via PRAGMA user_version
 ├── paperless.py        # Paperless-ngx API + document helpers
-├── ui.py               # Preview/edit functions for import workflow
+├── ui.py               # Interactive transaction and document editors
 ├── commands/           # Command handler modules
 │   ├── account_cmd.py  #   account add/list
 │   ├── add_cmd.py      #   add buy/sell/dividend/interest/deposit/withdrawal/transfer
 │   ├── config_cmd.py   #   config show/set/check
 │   ├── doc_cmd.py      #   doc add/edit
 │   ├── edit_cmd.py     #   edit transaction
-│   ├── import_cmd.py   #   import (PDF parsing + insertion)
 │   ├── list_cmd.py     #   list transactions
 │   └── report_cmd.py   #   report summary/balance/cashflow/holdings/performance
-├── parsers/            # PDF parsing modules
-│   ├── base.py         #   Base parser interface
-│   ├── llm.py          #   Ollama LLM parser
-│   └── scalable*.py    #   Scalable Capital-specific parsers
 ├── schema.sql          # Full schema for fresh/test databases
 └── test_cli.py         # Test suite
 ```
@@ -320,4 +300,4 @@ The schema contains the following tables:
 - [Pixi](https://pixi.sh) - Package and environment management
 - [SQLite CLI](https://sqlite.org/cli.html) - Database interaction
 - [D2](https://d2lang.com/) - Diagram language for the schema visualization
-- [Ollama](https://ollama.com/) - Local LLM for PDF import parsing
+- [Ollama](https://ollama.com/) - Optional local LLM, the last resort for PDF import
