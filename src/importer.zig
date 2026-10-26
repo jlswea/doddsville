@@ -7,9 +7,88 @@ const Allocator = std.mem.Allocator;
 
 const f = @import("format.zig");
 const ledger = @import("ledger.zig");
+const ollama = @import("ollama.zig");
 const paperless = @import("paperless.zig");
 const parsers = @import("parsers/parsers.zig");
+const pdf = @import("pdf/pdf.zig");
 const sqlite = @import("sqlite.zig");
+
+pub const max_pdf_size = 1024 * 1024;
+/// Caps each decoded PDF stream; page contents of the supported statements are under 100 KiB.
+const decode_limit = 512 * 1024;
+
+pub const Read = union(enum) {
+    pages: []const pdf.Page,
+    not_found,
+    too_large,
+    /// Error name from the PDF reader.
+    unreadable: []const u8,
+};
+
+pub fn read(a: Allocator, io: std.Io, path: []const u8) !Read {
+    const src = std.Io.Dir.cwd().readFileAlloc(io, path, a, .limited(max_pdf_size)) catch |err| switch (err) {
+        error.FileNotFound => return .not_found,
+        error.StreamTooLong => return .too_large,
+        else => return err,
+    };
+    return .{ .pages = pdf.extract(a, src, decode_limit) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return .{ .unreadable = @errorName(err) },
+    } };
+}
+
+pub const Parsed = union(enum) {
+    ok: parsers.Result,
+    unknown_parser,
+    no_parser,
+    /// A parser claimed the document but its checks failed.
+    refused: struct { parser: []const u8, reason: []const u8 },
+};
+
+/// Deterministic parsers only: the named one, or the first that claims the pages.
+pub fn parse(a: Allocator, pages: []const pdf.Page, parser_name: ?[]const u8) Allocator.Error!Parsed {
+    const parser = if (parser_name) |n| parsers.byName(n) orelse return .unknown_parser else parsers.match(pages) orelse return .no_parser;
+    var diag: parsers.Diag = .{};
+    const r = parser.parse(a, pages, &diag) catch |err| switch (err) {
+        error.Unrecognized => return .{ .refused = .{ .parser = parser.name, .reason = diag.reason } },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    return .{ .ok = r };
+}
+
+pub const Llm = union(enum) {
+    ok: struct { result: parsers.Result, rejected: usize },
+    /// Ollama could not be reached or answered with an error.
+    unavailable: []const u8,
+    /// The answer was not usable.
+    invalid: []const u8,
+};
+
+/// The last resort; the result goes through the same row checks as any other.
+pub fn askLlm(a: Allocator, client: *ollama.Client, pages: []const pdf.Page) !Llm {
+    const answer = client.generate(try parsers.llm.prompt(a, pages)) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return .{ .unavailable = client.last_error },
+    };
+    var rejected: usize = 0;
+    var diag: parsers.Diag = .{};
+    const r = parsers.llm.parseAnswer(a, answer, &rejected, &diag) catch |err| switch (err) {
+        error.Unrecognized => return .{ .invalid = diag.reason },
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    return .{ .ok = .{ .result = r, .rejected = rejected } };
+}
+
+/// "scalable_trade, scalable_statement, llm"
+pub fn parserNames(a: Allocator) Allocator.Error![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (parsers.all) |p| {
+        try out.appendSlice(a, p.name);
+        try out.appendSlice(a, ", ");
+    }
+    try out.appendSlice(a, parsers.llm.name);
+    return out.items;
+}
 
 /// One candidate transaction as shown and edited before import.
 pub const Row = struct {
@@ -311,4 +390,17 @@ test "upload plan: tags, correspondent and type from the parser result" {
     try testing.expectEqual(@as(?i64, 3), plan.metadata.document_type_id);
     try testing.expectEqualStrings("2024-04-03", plan.metadata.created);
     try testing.expect(try uploadPlan(a, try sample(a), "file", &corr, &types, tags[0..1]) == null);
+}
+
+test "parse outcomes" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const pages = try parsers.fixture(a, .{.{.{ 700, .{.{ 70, "Hello" }} }}});
+    try testing.expect(try parse(a, pages, null) == .no_parser);
+    try testing.expect(try parse(a, pages, "nope") == .unknown_parser);
+    const refused = try parse(a, pages, "scalable_trade");
+    try testing.expectEqualStrings("scalable_trade", refused.refused.parser);
+    try testing.expectEqualStrings("not a Wertpapierabrechnung", refused.refused.reason);
+    try testing.expectEqualStrings("scalable_trade, scalable_statement, llm", try parserNames(a));
 }
