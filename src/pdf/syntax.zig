@@ -175,6 +175,13 @@ fn number(run: []const u8) ?Token {
 
 pub const Ref = struct { num: u32, gen: u16 };
 
+/// Only produced by Document: streams are always indirect objects.
+pub const Stream = struct {
+    dict: Dict,
+    /// Still encoded.
+    data: []const u8,
+};
+
 pub const Object = union(enum) {
     null,
     boolean: bool,
@@ -185,6 +192,7 @@ pub const Object = union(enum) {
     array: []const Object,
     dict: Dict,
     ref: Ref,
+    stream: Stream,
 
     pub fn number(o: Object) ?f64 {
         return switch (o) {
