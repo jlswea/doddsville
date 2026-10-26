@@ -16,6 +16,7 @@ const add_cmd = @import("commands/add.zig");
 const config_cmd = @import("commands/config.zig");
 const doc_cmd = @import("commands/doc.zig");
 const edit_cmd = @import("commands/edit.zig");
+const import_cmd = @import("commands/import.zig");
 const list_cmd = @import("commands/list.zig");
 const report_cmd = @import("commands/report.zig");
 
@@ -91,8 +92,9 @@ const top_help =
     \\  report    Reports (summary, balance, cashflow, holdings, performance)
     \\  doc       Manage documents linked to transactions (add, edit)
     \\  config    Manage CLI configuration (show, check)
+    \\  import    Import transactions from a broker PDF (only --raw so far)
     \\
-    \\  import, sensor: not ported yet; use the Python CLI (pixi run python cli.py ...)
+    \\  sensor: not ported yet; use the Python CLI (pixi run python cli.py ...)
     \\
     \\options:
     \\  -h, --help     show this help message and exit
@@ -236,7 +238,9 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
     // `config` works without a database.
     if (eql(command, "config")) return configCommand(app, rest);
 
-    if (eql(command, "import") or eql(command, "sensor")) {
+    if (eql(command, "import")) return importCommand(app, rest);
+
+    if (eql(command, "sensor")) {
         try app.print("{s}'dv {s}' is not ported to Zig yet.{s} Use the Python CLI for now:\n  pixi run python cli.py {s} ...\n", .{ f.YELLOW, command, f.RESET, command });
         return 1;
     }
@@ -415,6 +419,21 @@ fn execute(app: *App, action: Action) !void {
         .doc_add => |d| try doc_cmd.add(app, d.txn, d.docs),
         .doc_edit => |id| try doc_cmd.edit(app, id),
     }
+}
+
+fn importCommand(app: *App, rest: []const []const u8) !u8 {
+    const p = try parse(app, .{
+        .prog = "dv import",
+        .help = "Import transactions from a broker PDF.",
+        .positionals = &.{.{ .name = "pdf_file", .help = "Path to the PDF file to import" }},
+        .options = &.{.{ .long = "--raw", .dest = "raw", .kind = .flag, .help = "Show the extracted text and exit (for debugging)" }},
+    }, rest);
+    if (!p.flag("raw")) {
+        try app.print("{s}Only 'dv import --raw' is ported to Zig so far.{s} Use the Python CLI for now:\n  pixi run python cli.py import ...\n", .{ f.YELLOW, f.RESET });
+        return 1;
+    }
+    try import_cmd.raw(app, p.pos[0]);
+    return 0;
 }
 
 fn configCommand(app: *App, rest: []const []const u8) !u8 {
