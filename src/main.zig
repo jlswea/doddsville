@@ -90,7 +90,7 @@ const top_help =
     \\  edit      Edit an existing transaction
     \\  report    Reports (summary, balance, cashflow, holdings, performance)
     \\  doc       Manage documents linked to transactions (add, edit)
-    \\  config    Manage CLI configuration (show, set, check)
+    \\  config    Manage CLI configuration (show, check)
     \\
     \\  import, sensor: not ported yet; use the Python CLI (pixi run python cli.py ...)
     \\
@@ -251,7 +251,7 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
     // Parse/validate arguments before touching the database (argparse order).
     const action = try parseCommand(app, command, rest);
 
-    const db_path = db_flag orelse (app.config.get("db") orelse Config.default_db);
+    const db_path = db_flag orelse app.config.db;
     app.db = try sqlite.Db.open(try app.a.dupeSentinel(u8, db_path, 0));
     defer app.db.close();
     try migrations.run(app.db);
@@ -418,16 +418,10 @@ fn execute(app: *App, action: Action) !void {
 }
 
 fn configCommand(app: *App, rest: []const []const u8) !u8 {
-    const sub = try subcommand(app, "dv config", rest, &.{ "show", "set", "check" });
+    const sub = try subcommand(app, "dv config", rest, &.{ "show", "check" });
     if (eql(sub, "show")) {
         _ = try parse(app, .{ .prog = "dv config show", .help = "Show current configuration" }, rest[1..]);
         try config_cmd.show(app);
-    } else if (eql(sub, "set")) {
-        const p = try parse(app, .{ .prog = "dv config set", .help = "Set a configuration value", .positionals = &.{
-            .{ .name = "key", .help = "Config key (e.g., db)" },
-            .{ .name = "value", .help = "Config value" },
-        } }, rest[1..]);
-        try config_cmd.set(app, p.pos[0], p.pos[1]);
     } else {
         _ = try parse(app, .{ .prog = "dv config check", .help = "Check paperless-ngx API connection" }, rest[1..]);
         try config_cmd.check(app);

@@ -22,9 +22,25 @@ zig fetch --save=sqlite https://www.sqlite.org/2025/sqlite-amalgamation-3500400.
 ```
 
 Put the binary on your PATH, e.g. `ln -s "$PWD/zig-out/bin/dv" ~/.local/bin/dv`.
-Like the Python CLI, `dv` reads `dv.conf` and `data.db` from the **current directory**
-(override with `--db`), and Paperless credentials from `DV_PAPERLESS_URL` /
-`DV_PAPERLESS_TOKEN`.
+
+### Configuration
+
+Settings live in `~/.config/doddsville/config.zon` (or `$XDG_CONFIG_HOME/doddsville/`).
+Without that file `dv` uses `data.db` in the current directory; `--db` always wins.
+
+```zig
+.{
+    .db = "/Users/me/doddsville/data.db",
+    .paperless = .{ .url = "http://nas:8000", .keychain = "doddsville-paperless" },
+}
+```
+
+The Paperless token is read from that macOS Keychain item:
+
+```bash
+security add-generic-password -U -a dv -s doddsville-paperless -w   # prompts for the token
+dv config check
+```
 
 ### Layout
 
@@ -34,7 +50,7 @@ src/
 ├── main.zig         entry point: argument specs + dispatch (was cli.py)
 ├── args.zig         small argparse replacement
 ├── App.zig          per-run context: arena, I/O, config, db, input()
-├── Config.zig       dv.conf + env vars (config.py)
+├── Config.zig       config.zon + Keychain token (config.py)
 ├── sqlite.zig       hand-written SQLite binding (@cImport is gone in 0.17)
 ├── migrations.zig   PRAGMA user_version migrations (migrations.py)
 ├── format.zig       money/date parsing + formatting (formatting.py)
