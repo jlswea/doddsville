@@ -4,13 +4,15 @@
 const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
-const ledger = @import("../ledger.zig");
+const importer = @import("../importer.zig");
 const lookup = @import("../lookup.zig");
 const ollama = @import("../ollama.zig");
 const paperless = @import("../paperless.zig");
 const parsers = @import("../parsers/parsers.zig");
 const pdf = @import("../pdf/pdf.zig");
 const ui = @import("../ui.zig");
+
+const Row = importer.Row;
 
 pub const max_pdf_size = 1024 * 1024;
 /// Caps each decoded PDF stream; page contents of the supported statements are under 100 KiB.
@@ -55,66 +57,6 @@ pub fn raw(app: *App, path: []const u8) !void {
     }
 }
 
-/// One candidate transaction as shown and edited before import.
-const Row = struct {
-    kind: parsers.Kind,
-    date: []const u8,
-    isin: ?[]const u8,
-    security: []const u8,
-    security_id: ?i64 = null,
-    quantity: i64,
-    unit: i64,
-    total: i64,
-    cost: i64,
-    currency: []const u8,
-    exchange_rate: f64,
-    /// Existing transaction that looks like the same booking.
-    duplicate_of: ?i64 = null,
-    /// Shares held before this import, for sells.
-    held: ?i64 = null,
-
-    fn hasSecurity(r: Row) bool {
-        return r.kind == .buy or r.kind == .sell or r.kind == .dividend;
-    }
-
-    fn entry(r: Row, account: i64) ledger.Entry {
-        return .{
-            .account = account,
-            .kind = @tagName(r.kind),
-            .security = if (r.hasSecurity()) r.security_id else null,
-            .quantity = r.quantity,
-            .unit = r.unit,
-            .total = r.total,
-            .cost = r.cost,
-            .date = r.date,
-            .currency = r.currency,
-            .exchange_rate = r.exchange_rate,
-        };
-    }
-};
-
-fn toRow(app: *App, t: parsers.Txn) !Row {
-    return .{
-        .kind = t.kind,
-        .date = try t.date.iso(app.a),
-        .isin = t.isin,
-        .security = t.security orelse "",
-        .quantity = t.quantity,
-        // Statements give only the amount; the unit price follows from it.
-        .unit = t.unit_price orelse unitFromTotal(t.total, t.quantity),
-        .total = t.total,
-        .cost = t.cost,
-        .currency = try app.a.dupe(u8, &t.currency),
-        .exchange_rate = t.exchange_rate,
-    };
-}
-
-fn unitFromTotal(total: i64, quantity: i64) i64 {
-    if (quantity <= 0) return total;
-    const q = @divTrunc(@as(i128, total) * f.quantity_scale + @divTrunc(quantity, 2), quantity);
-    return std.math.cast(i64, q) orelse total;
-}
-
 pub fn run(app: *App, opts: Options) !void {
     const pages = (try extract(app, opts.pdf_file)) orelse return error.Reported;
 
@@ -126,8 +68,7 @@ pub fn run(app: *App, opts: Options) !void {
         return;
     }
 
-    var rows: std.ArrayList(Row) = .empty;
-    for (result.txns) |t| try rows.append(app.a, try toRow(app, t));
+    var rows = try importer.rows(app.a, result);
 
     const account = (try lookup.getOrPromptAccount(app, opts.account)) orelse return;
     try resolve(app, &rows, account.id);
@@ -151,8 +92,7 @@ pub fn run(app: *App, opts: Options) !void {
         return;
     }
 
-    var duplicates: usize = 0;
-    for (rows.items) |r| duplicates += @intFromBool(r.duplicate_of != null);
+    const duplicates = importer.duplicates(rows.items);
     if (duplicates == rows.items.len) {
         try app.print("\n{s}All transactions are already recorded; nothing to import.{s}\n", .{ f.YELLOW, f.RESET });
         return;
@@ -165,7 +105,7 @@ pub fn run(app: *App, opts: Options) !void {
         try app.line("Import cancelled.");
         return;
     }
-    const ids = try insert(app, rows.items, account.id);
+    const ids = try importer.commit(app.db, app.a, rows.items, account.id);
     try app.print("\n{s}Imported {d} transaction(s).{s}\n", .{ f.GREEN, ids.len, f.RESET });
 
     if (!opts.no_upload) try upload(app, opts.pdf_file, result, ids);
@@ -189,27 +129,12 @@ fn upload(app: *App, path: []const u8, result: parsers.Result, txn_ids: []const 
         return manualHint(app, path);
     };
 
-    var dv_tag_id: ?i64 = null;
-    var remove_tag_ids: std.ArrayList(i64) = .empty;
-    for (lists.tags) |t| {
-        if (std.mem.eql(u8, t.name, "dv")) {
-            dv_tag_id = t.id;
-        } else if (std.mem.eql(u8, t.name, "todo") or std.mem.eql(u8, t.name, "inbox")) try remove_tag_ids.append(app.a, t.id);
-    }
-    const dv_tag = dv_tag_id orelse {
+    const plan = (try importer.uploadPlan(app.a, result, std.fs.path.stem(path), lists.correspondents, lists.doc_types, lists.tags)) orelse {
         try app.print("\n{s}✗ Cannot upload: tag 'dv' not found in paperless-ngx.{s}\n", .{ f.RED, f.RESET });
         try app.line("  Please create the 'dv' tag in paperless before uploading documents.");
         return manualHint(app, path);
     };
-
-    const stem = std.fs.path.stem(path);
-    var meta: paperless.DocumentMetadata = .{
-        .title = stem,
-        .created = if (result.created) |d| try d.iso(app.a) else "",
-        .correspondent_id = byNameContains(lists.correspondents, result.correspondent),
-        .document_type_id = byName(lists.doc_types, result.document_type),
-        .tag_ids = try app.a.dupe(i64, &.{dv_tag}),
-    };
+    var meta = plan.metadata;
     if (meta.correspondent_id == null) {
         try app.print("\n{s}⚠ No correspondent matching '{s}' found.{s}\n", .{ f.YELLOW, result.correspondent, f.RESET });
         try app.line("  Please set the correspondent manually in the metadata editor.");
@@ -219,7 +144,7 @@ fn upload(app: *App, path: []const u8, result: parsers.Result, txn_ids: []const 
         meta = try ui.editDocumentMetadata(app, meta, lists);
 
     try app.print("\nUploading {s} to paperless-ngx...\n", .{std.fs.path.basename(path)});
-    const doc_id = cl.upload(path, dv_tag, meta, remove_tag_ids.items) catch |err| {
+    const doc_id = cl.upload(path, plan.dv_tag, meta, plan.remove_tags) catch |err| {
         try app.print("  {s}Warning: Could not upload to paperless: {s}{s}\n", .{ f.YELLOW, cl.describe(err), f.RESET });
         return manualHint(app, path);
     };
@@ -240,34 +165,6 @@ fn fetchLists(cl: *paperless.Client) !ui.Lists {
 
 fn manualHint(app: *App, path: []const u8) !void {
     try app.print("  You can manually link later with: dv doc add <transaction_id> {s}\n", .{path});
-}
-
-/// resolve_correspondent: either name contains the other, case-insensitively.
-fn byNameContains(items: []const paperless.Named, name: []const u8) ?i64 {
-    if (name.len == 0) return null;
-    for (items) |it| {
-        if (std.ascii.findIgnoreCase(it.name, name) != null or std.ascii.findIgnoreCase(name, it.name) != null) return it.id;
-    }
-    return null;
-}
-
-fn byName(items: []const paperless.Named, name: []const u8) ?i64 {
-    for (items) |it| if (std.ascii.eqlIgnoreCase(it.name, name)) return it.id;
-    return null;
-}
-
-/// All rows in one database transaction; returns the new transaction ids.
-fn insert(app: *App, rows: []const Row, account_id: i64) ![]const i64 {
-    var ids: std.ArrayList(i64) = .empty;
-    try app.db.exec("BEGIN");
-    errdefer app.db.exec("ROLLBACK") catch {};
-    for (rows) |r| {
-        if (r.duplicate_of != null) continue;
-        try ids.append(app.a, try ledger.insert(app.db, r.entry(account_id)));
-        if (r.security_id) |sid| if (r.security.len > 0) try ledger.fillSecurityName(app.db, sid, r.security);
-    }
-    try app.db.exec("COMMIT");
-    return ids.items;
 }
 
 /// Deterministic parsers first; the LLM only when none can read the document
@@ -337,48 +234,33 @@ fn printSkipped(app: *App, skipped: []const parsers.Skipped) !void {
     }
 }
 
-/// Securities by ISIN, falling back to name search; flags duplicates and
-/// sells beyond the current holdings. Rows without a security are dropped.
+/// Unknown securities are the user's call: create them from the document's
+/// ISIN, search by name, or drop the row.
 fn resolve(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
+    try importer.check(app.db, rows.items, account_id);
+    var changed = false;
     var i: usize = 0;
     while (i < rows.items.len) {
         const r = &rows.items[i];
-        if (r.hasSecurity() and r.security_id == null) {
-            r.security_id = try securityFor(app, r.*);
-            if (r.security_id == null) {
-                try app.print("{s}Skipping transaction (security not found): {s}{s}\n", .{ f.YELLOW, r.isin orelse r.security, f.RESET });
-                _ = rows.orderedRemove(i);
-                continue;
-            }
+        if (!r.needsSecurity()) {
+            i += 1;
+            continue;
         }
-        r.duplicate_of = try ledger.findDuplicate(app.db, r.entry(account_id));
-        r.held = if (r.kind == .sell) try ledger.holdings(app.db, account_id, r.security_id.?, r.duplicate_of) else null;
+        if (r.isin != null and r.security.len > 0) {
+            const q = try app.fmt("Security {s} ({s}) is not in the database. Add it? (y/N) ", .{ r.security, r.isin.? });
+            if (std.ascii.eqlIgnoreCase(f.strip(try app.input(q)), "y")) try importer.createSecurity(app.db, r);
+        } else if (r.security.len > 0) {
+            if (try lookup.getOrPromptSecurity(app, r.security)) |sec| r.security_id = sec.id;
+        }
+        if (r.needsSecurity()) {
+            try app.print("{s}Skipping transaction (security not found): {s}{s}\n", .{ f.YELLOW, r.isin orelse r.security, f.RESET });
+            _ = rows.orderedRemove(i);
+            continue;
+        }
+        changed = true;
         i += 1;
     }
-}
-
-fn securityFor(app: *App, r: Row) !?i64 {
-    if (r.isin) |isin| {
-        if (try ledger.securityByIsin(app.db, isin)) |id| return id;
-        if (r.security.len > 0) {
-            const q = try app.fmt("Security {s} ({s}) is not in the database. Add it? (y/N) ", .{ r.security, isin });
-            if (!std.ascii.eqlIgnoreCase(f.strip(try app.input(q)), "y")) return null;
-            return try ledger.addSecurity(app.db, isin, r.security);
-        }
-    }
-    if (r.security.len > 0) if (try lookup.getOrPromptSecurity(app, r.security)) |s| return s.id;
-    return null;
-}
-
-/// The database name; many securities were seeded with an ISIN only, so the
-/// document's name and then the ISIN stand in.
-fn securityLabel(app: *App, r: Row) ![]const u8 {
-    if (r.security_id) |id| if (try ledger.security(app.db, app.a, id)) |sec| {
-        if (sec.name.len > 0) return sec.name;
-        if (r.security.len > 0) return r.security;
-        if (sec.isin.len > 0) return sec.isin;
-    };
-    return if (r.security.len > 0) r.security else "-";
+    if (changed) try importer.check(app.db, rows.items, account_id);
 }
 
 fn preview(app: *App, rows: []const Row, account: []const u8) !void {
@@ -390,7 +272,7 @@ fn preview(app: *App, rows: []const Row, account: []const u8) !void {
     });
     try app.line(f.rep("-", 97));
     for (rows, 1..) |r, i| {
-        const sec = if (r.hasSecurity()) try securityLabel(app, r) else "-";
+        const sec = if (r.hasSecurity()) try importer.label(app.db, a, r) else "-";
         try app.print("{s} {s} {s} {s} {s} {s} {s} {s}\n", .{
             try f.left(a, try f.int(a, @intCast(i)), 3),
             try f.left(a, @tagName(r.kind), 9),
@@ -403,8 +285,8 @@ fn preview(app: *App, rows: []const Row, account: []const u8) !void {
         });
         if (r.duplicate_of) |d|
             try app.print("    {s}possible duplicate of transaction {d}; it will be skipped{s}\n", .{ f.YELLOW, d, f.RESET });
-        if (r.held) |h| if (r.quantity > h)
-            try app.print("    {s}sells {s} but only {s} are held{s}\n", .{ f.YELLOW, try f.quantity(a, r.quantity), try f.quantity(a, h), f.RESET });
+        if (r.oversells())
+            try app.print("    {s}sells {s} but only {s} are held{s}\n", .{ f.YELLOW, try f.quantity(a, r.quantity), try f.quantity(a, r.held.?), f.RESET });
     }
 }
 
@@ -426,55 +308,30 @@ fn editRows(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
             continue;
         }
         const r = &rows.items[n - 1];
-        const sec = try securityLabel(app, r.*);
-        const before: ui.EditTxn = .{
+        const shown = try importer.label(app.db, app.a, r.*);
+        const after = (try ui.editTransaction(app, .{
             .type = @tagName(r.kind),
             .date = r.date,
-            .security = sec,
+            .security = shown,
             .quantity = r.quantity,
             .unit_price_cents = r.unit,
             .cost_cents = r.cost,
             .currency = r.currency,
             .exchange_rate = r.exchange_rate,
-        };
-        const after = (try ui.editTransaction(app, before)) orelse {
+        })) orelse {
             _ = rows.orderedRemove(n - 1);
             continue;
         };
-        if (std.meta.stringToEnum(parsers.Kind, after.type)) |k| r.kind = k;
-        r.date = after.date;
-        r.cost = after.cost_cents;
-        r.currency = after.currency;
-        r.exchange_rate = after.exchange_rate;
-        if (after.quantity != r.quantity or after.unit_price_cents != r.unit) {
-            r.quantity = after.quantity;
-            r.unit = after.unit_price_cents;
-            r.total = f.lineTotal(r.quantity, r.unit) orelse r.total;
-        }
-        if (!std.mem.eql(u8, after.security, sec)) {
-            r.isin = null;
-            r.security = after.security;
-            r.security_id = null;
-        }
-        if (!r.hasSecurity()) r.security_id = null;
-        var one: std.ArrayList(Row) = .empty;
-        try one.append(app.a, r.*);
-        try resolve(app, &one, account_id);
-        if (one.items.len == 0) {
-            _ = rows.orderedRemove(n - 1);
-        } else r.* = one.items[0];
+        importer.applyEdit(r, shown, .{
+            .kind = std.meta.stringToEnum(parsers.Kind, after.type) orelse r.kind,
+            .date = after.date,
+            .security = after.security,
+            .quantity = after.quantity,
+            .unit = after.unit_price_cents,
+            .cost = after.cost_cents,
+            .currency = after.currency,
+            .exchange_rate = after.exchange_rate,
+        });
+        try resolve(app, rows, account_id);
     }
-}
-
-test "unit price derived from a statement amount" {
-    try std.testing.expectEqual(@as(i64, 9759), unitFromTotal(50000, 5_123_456));
-    try std.testing.expectEqual(@as(i64, 9840), unitFromTotal(118080, 12_000_000));
-}
-
-test "paperless names resolve like the Python helpers" {
-    const items = [_]paperless.Named{ .{ .id = 1, .name = "Scalable" }, .{ .id = 2, .name = "Abrechnung" } };
-    try std.testing.expectEqual(@as(?i64, 1), byNameContains(&items, "Scalable Capital"));
-    try std.testing.expectEqual(@as(?i64, null), byNameContains(&items, ""));
-    try std.testing.expectEqual(@as(?i64, 2), byName(&items, "abrechnung"));
-    try std.testing.expectEqual(@as(?i64, null), byName(&items, "Kontoauszug"));
 }
