@@ -1,5 +1,6 @@
-//! Port of commands/import_cmd.py: broker PDFs into transactions. Parsing is
-//! deterministic (src/parsers); nothing is written without confirmation.
+//! `dv import`: the terminal front end for importer.zig. It asks every
+//! question (account, unknown securities, LLM fallback, edits, confirmation);
+//! nothing is written without confirmation.
 
 const std = @import("std");
 const App = @import("../App.zig");
@@ -14,10 +15,6 @@ const ui = @import("../ui.zig");
 
 const Row = importer.Row;
 
-pub const max_pdf_size = 1024 * 1024;
-/// Caps each decoded PDF stream; page contents of the supported statements are under 100 KiB.
-const decode_limit = 512 * 1024;
-
 pub const Options = struct {
     pdf_file: []const u8,
     account: ?[]const u8 = null,
@@ -29,24 +26,13 @@ pub const Options = struct {
 
 /// Reports problems itself and returns null.
 pub fn extract(app: *App, path: []const u8) !?[]const pdf.Page {
-    const src = std.Io.Dir.cwd().readFileAlloc(app.io, path, app.a, .limited(max_pdf_size)) catch |err| switch (err) {
-        error.FileNotFound => {
-            try app.print("{s}PDF file not found: {s}{s}\n", .{ f.RED, path, f.RESET });
-            return null;
-        },
-        error.StreamTooLong => {
-            try app.print("{s}PDF is larger than {d} KiB: {s}{s}\n", .{ f.RED, max_pdf_size / 1024, path, f.RESET });
-            return null;
-        },
-        else => return err,
-    };
-    return pdf.extract(app.a, src, decode_limit) catch |err| switch (err) {
-        error.OutOfMemory => err,
-        else => {
-            try app.print("{s}Could not read {s}: {s}{s}\n", .{ f.RED, path, @errorName(err), f.RESET });
-            return null;
-        },
-    };
+    switch (try importer.read(app.a, app.io, path)) {
+        .pages => |pages| return pages,
+        .not_found => try app.print("{s}PDF file not found: {s}{s}\n", .{ f.RED, path, f.RESET }),
+        .too_large => try app.print("{s}PDF is larger than {d} KiB: {s}{s}\n", .{ f.RED, importer.max_pdf_size / 1024, path, f.RESET }),
+        .unreadable => |why| try app.print("{s}Could not read {s}: {s}{s}\n", .{ f.RED, path, why, f.RESET }),
+    }
+    return null;
 }
 
 pub fn raw(app: *App, path: []const u8) !void {
@@ -172,17 +158,15 @@ fn manualHint(app: *App, path: []const u8) !void {
 fn parse(app: *App, pages: []const pdf.Page, opts: Options) !?parsers.Result {
     const forced_llm = if (opts.parser) |n| std.mem.eql(u8, n, parsers.llm.name) else false;
     if (!forced_llm) {
-        const parser = if (opts.parser) |n| parsers.byName(n) orelse {
-            try app.print("{s}Unknown parser '{s}'. Available: {s}, {s}{s}\n", .{ f.RED, n, try parserNames(app), parsers.llm.name, f.RESET });
-            return null;
-        } else parsers.match(pages);
-        if (parser) |pr| {
-            var diag: parsers.Diag = .{};
-            if (pr.parse(app.a, pages, &diag)) |r| return r else |err| switch (err) {
-                error.Unrecognized => try app.print("{s}The {s} parser could not read this document: {s}.{s}\n", .{ f.YELLOW, pr.name, diag.reason, f.RESET }),
-                else => return err,
-            }
-        } else try app.print("{s}No parser recognises this document.{s}\n", .{ f.YELLOW, f.RESET });
+        switch (try importer.parse(app.a, pages, opts.parser)) {
+            .ok => |r| return r,
+            .unknown_parser => {
+                try app.print("{s}Unknown parser '{s}'. Available: {s}{s}\n", .{ f.RED, opts.parser.?, try importer.parserNames(app.a), f.RESET });
+                return null;
+            },
+            .no_parser => try app.print("{s}No parser recognises this document.{s}\n", .{ f.YELLOW, f.RESET }),
+            .refused => |x| try app.print("{s}The {s} parser could not read this document: {s}.{s}\n", .{ f.YELLOW, x.parser, x.reason, f.RESET }),
+        }
         if (opts.parser != null) return null;
     }
 
@@ -195,34 +179,16 @@ fn parse(app: *App, pages: []const pdf.Page, opts: Options) !?parsers.Result {
         }
     }
     try app.print("Asking {s}, this can take a minute...\n", .{client.model});
-    const answer = client.generate(try parsers.llm.prompt(app.a, pages)) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        else => {
-            try app.print("{s}{s}{s}\n", .{ f.RED, client.last_error, f.RESET });
-            return null;
+    switch (try importer.askLlm(app.a, &client, pages)) {
+        .ok => |x| {
+            try app.print("{s}⚠ These come from the LLM, not a parser: check every field.{s}\n", .{ f.YELLOW, f.RESET });
+            if (x.rejected > 0) try app.print("{s}  {d} transaction(s) from the LLM were invalid and dropped.{s}\n", .{ f.YELLOW, x.rejected, f.RESET });
+            return x.result;
         },
-    };
-    var rejected: usize = 0;
-    var diag: parsers.Diag = .{};
-    const r = parsers.llm.parseAnswer(app.a, answer, &rejected, &diag) catch |err| switch (err) {
-        error.Unrecognized => {
-            try app.print("{s}{s}. Try again or another --model.{s}\n", .{ f.RED, diag.reason, f.RESET });
-            return null;
-        },
-        else => return err,
-    };
-    try app.print("{s}⚠ These come from the LLM, not a parser: check every field.{s}\n", .{ f.YELLOW, f.RESET });
-    if (rejected > 0) try app.print("{s}  {d} transaction(s) from the LLM were invalid and dropped.{s}\n", .{ f.YELLOW, rejected, f.RESET });
-    return r;
-}
-
-fn parserNames(app: *App) ![]const u8 {
-    var out: std.ArrayList(u8) = .empty;
-    for (parsers.all, 0..) |p, i| {
-        if (i > 0) try out.appendSlice(app.a, ", ");
-        try out.appendSlice(app.a, p.name);
+        .unavailable => |msg| try app.print("{s}{s}{s}\n", .{ f.RED, msg, f.RESET }),
+        .invalid => |why| try app.print("{s}{s}. Try again or another --model.{s}\n", .{ f.RED, why, f.RESET }),
     }
-    return out.items;
+    return null;
 }
 
 fn printSkipped(app: *App, skipped: []const parsers.Skipped) !void {
