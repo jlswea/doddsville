@@ -145,7 +145,58 @@ pub fn run(app: *App, opts: Options) !void {
         try app.print("\n{s}Dry run - no transactions inserted.{s}\n", .{ f.YELLOW, f.RESET });
         return;
     }
-    try app.print("\n{s}Inserting is not ported yet; rerun with --dry-run or use the Python CLI.{s}\n", .{ f.YELLOW, f.RESET });
+
+    var duplicates: usize = 0;
+    for (rows.items) |r| duplicates += @intFromBool(r.duplicate_of != null);
+    if (duplicates == rows.items.len) {
+        try app.print("\n{s}All transactions are already recorded; nothing to import.{s}\n", .{ f.YELLOW, f.RESET });
+        return;
+    }
+    const prompt = if (duplicates > 0)
+        try app.fmt("\nImport {d} transaction(s), skipping {d} possible duplicate(s)? (y/N) ", .{ rows.items.len - duplicates, duplicates })
+    else
+        "\nImport these transactions? (y/N) ";
+    if (!std.ascii.eqlIgnoreCase(f.strip(try app.input(prompt)), "y")) {
+        try app.line("Import cancelled.");
+        return;
+    }
+    const ids = try insert(app, rows.items, account.id);
+    try app.print("\n{s}Imported {d} transaction(s).{s}\n", .{ f.GREEN, ids.len, f.RESET });
+}
+
+/// All rows in one database transaction; returns the new transaction ids.
+fn insert(app: *App, rows: []const Row, account_id: i64) ![]const i64 {
+    var ids: std.ArrayList(i64) = .empty;
+    try app.db.exec("BEGIN");
+    errdefer app.db.exec("ROLLBACK") catch {};
+    for (rows) |r| {
+        if (r.duplicate_of != null) continue;
+        const kind = @tagName(r.kind);
+        switch (r.kind) {
+            .buy, .sell => try app.db.run(
+                \\INSERT INTO "transaction"
+                \\   (account, security, type, quantity, unit_value, total_value, cost, date, currency, exchange_rate)
+                \\   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0)
+            , .{ account_id, r.security_id.?, kind, r.quantity, r.unit, r.total, r.cost, r.date, r.currency }),
+            .dividend => try app.db.run(
+                \\INSERT INTO "transaction"
+                \\   (account, security, type, total_value, cost, date, currency, exchange_rate)
+                \\   VALUES (?, ?, ?, ?, ?, ?, ?, 1.0)
+            , .{ account_id, r.security_id.?, kind, r.total, r.cost, r.date, r.currency }),
+            .interest, .deposit, .withdrawal => try app.db.run(
+                \\INSERT INTO "transaction"
+                \\   (account, type, total_value, cost, date, currency, exchange_rate)
+                \\   VALUES (?, ?, ?, ?, ?, ?, 1.0)
+            , .{ account_id, kind, r.total, r.cost, r.date, r.currency }),
+        }
+        try ids.append(app.a, app.db.lastInsertRowId());
+        // Most securities were seeded without a name; the document has one.
+        if (r.security_id) |sid| if (r.security.len > 0) try app.db.run(
+            \\UPDATE security SET name = ? WHERE id = ? AND TRIM(COALESCE(name, '')) = ''
+        , .{ r.security, sid });
+    }
+    try app.db.exec("COMMIT");
+    return ids.items;
 }
 
 fn parserNames(app: *App) ![]const u8 {
