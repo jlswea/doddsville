@@ -5,6 +5,7 @@ const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
 const lookup = @import("../lookup.zig");
+const paperless = @import("../paperless.zig");
 const parsers = @import("../parsers/parsers.zig");
 const pdf = @import("../pdf/pdf.zig");
 const ui = @import("../ui.zig");
@@ -162,6 +163,93 @@ pub fn run(app: *App, opts: Options) !void {
     }
     const ids = try insert(app, rows.items, account.id);
     try app.print("\n{s}Imported {d} transaction(s).{s}\n", .{ f.GREEN, ids.len, f.RESET });
+
+    if (!opts.no_upload) try upload(app, opts.pdf_file, result, ids);
+}
+
+/// Port of step 12 in import_cmd.py: upload the PDF with metadata from the
+/// parser, link it to the new transactions and set the backlink field.
+fn upload(app: *App, path: []const u8, result: parsers.Result, txn_ids: []const i64) !void {
+    var cl = paperless.Client.init(app) catch |err| switch (err) {
+        error.NotConfigured => {
+            try app.print("\n{s}Paperless not configured - skipping document upload.{s}\n", .{ f.YELLOW, f.RESET });
+            return;
+        },
+        else => return err,
+    };
+    defer cl.deinit();
+
+    try app.line("\nFetching Paperless metadata options...");
+    const lists: ui.Lists = fetchLists(&cl) catch |err| {
+        try app.print("  {s}Warning: Could not fetch Paperless metadata options: {s}{s}\n", .{ f.YELLOW, cl.describe(err), f.RESET });
+        return manualHint(app, path);
+    };
+
+    var dv_tag_id: ?i64 = null;
+    var remove_tag_ids: std.ArrayList(i64) = .empty;
+    for (lists.tags) |t| {
+        if (std.mem.eql(u8, t.name, "dv")) {
+            dv_tag_id = t.id;
+        } else if (std.mem.eql(u8, t.name, "todo") or std.mem.eql(u8, t.name, "inbox")) try remove_tag_ids.append(app.a, t.id);
+    }
+    const dv_tag = dv_tag_id orelse {
+        try app.print("\n{s}✗ Cannot upload: tag 'dv' not found in paperless-ngx.{s}\n", .{ f.RED, f.RESET });
+        try app.line("  Please create the 'dv' tag in paperless before uploading documents.");
+        return manualHint(app, path);
+    };
+
+    const stem = std.fs.path.stem(path);
+    var meta: paperless.DocumentMetadata = .{
+        .title = stem,
+        .created = if (result.created) |d| try d.iso(app.a) else "",
+        .correspondent_id = byNameContains(lists.correspondents, result.correspondent),
+        .document_type_id = byName(lists.doc_types, result.document_type),
+        .tag_ids = try app.a.dupe(i64, &.{dv_tag}),
+    };
+    if (meta.correspondent_id == null) {
+        try app.print("\n{s}⚠ No correspondent matching '{s}' found.{s}\n", .{ f.YELLOW, result.correspondent, f.RESET });
+        try app.line("  Please set the correspondent manually in the metadata editor.");
+    }
+    try ui.previewMetadata(app, meta, lists);
+    if (std.ascii.eqlIgnoreCase(f.strip(try app.input("\nEdit metadata before upload? (y/N) ")), "y"))
+        meta = try ui.editDocumentMetadata(app, meta, lists);
+
+    try app.print("\nUploading {s} to paperless-ngx...\n", .{std.fs.path.basename(path)});
+    const doc_id = cl.upload(path, dv_tag, meta, remove_tag_ids.items) catch |err| {
+        try app.print("  {s}Warning: Could not upload to paperless: {s}{s}\n", .{ f.YELLOW, cl.describe(err), f.RESET });
+        return manualHint(app, path);
+    };
+    try app.print("  {s}✓{s} Uploaded as document {d}\n", .{ f.GREEN, f.RESET, doc_id });
+    for (txn_ids) |tid| try paperless.insertTransactionDocuments(app, tid, &.{doc_id});
+    try app.print("  Linked document to {d} transaction(s)\n", .{txn_ids.len});
+    try paperless.backlink(app, &.{doc_id}, txn_ids);
+}
+
+fn fetchLists(cl: *paperless.Client) !ui.Lists {
+    return .{
+        .correspondents = try cl.fetchNamed("correspondents"),
+        .doc_types = try cl.fetchNamed("document_types"),
+        .storage_paths = try cl.fetchNamed("storage_paths"),
+        .tags = try cl.fetchNamed("tags"),
+    };
+}
+
+fn manualHint(app: *App, path: []const u8) !void {
+    try app.print("  You can manually link later with: dv doc add <transaction_id> {s}\n", .{path});
+}
+
+/// resolve_correspondent: either name contains the other, case-insensitively.
+fn byNameContains(items: []const paperless.Named, name: []const u8) ?i64 {
+    if (name.len == 0) return null;
+    for (items) |it| {
+        if (std.ascii.findIgnoreCase(it.name, name) != null or std.ascii.findIgnoreCase(name, it.name) != null) return it.id;
+    }
+    return null;
+}
+
+fn byName(items: []const paperless.Named, name: []const u8) ?i64 {
+    for (items) |it| if (std.ascii.eqlIgnoreCase(it.name, name)) return it.id;
+    return null;
 }
 
 /// All rows in one database transaction; returns the new transaction ids.
@@ -389,4 +477,12 @@ fn editRows(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
 test "unit price derived from a statement amount" {
     try std.testing.expectEqual(@as(i64, 9759), unitFromTotal(50000, 5_123_456));
     try std.testing.expectEqual(@as(i64, 9840), unitFromTotal(118080, 12_000_000));
+}
+
+test "paperless names resolve like the Python helpers" {
+    const items = [_]paperless.Named{ .{ .id = 1, .name = "Scalable" }, .{ .id = 2, .name = "Abrechnung" } };
+    try std.testing.expectEqual(@as(?i64, 1), byNameContains(&items, "Scalable Capital"));
+    try std.testing.expectEqual(@as(?i64, null), byNameContains(&items, ""));
+    try std.testing.expectEqual(@as(?i64, 2), byName(&items, "abrechnung"));
+    try std.testing.expectEqual(@as(?i64, null), byName(&items, "Kontoauszug"));
 }

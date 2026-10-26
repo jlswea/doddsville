@@ -187,7 +187,7 @@ pub const Lists = struct {
     tags: []const paperless.Named,
 };
 
-fn previewMetadata(app: *App, m: paperless.DocumentMetadata, l: Lists) !void {
+pub fn previewMetadata(app: *App, m: paperless.DocumentMetadata, l: Lists) !void {
     try app.print("\n{s}Document Metadata Preview:{s}\n\n", .{ f.BOLD, f.RESET });
     try app.print("  1. Title:         {s}\n", .{orEmpty(m.title)});
     try app.print("  2. Date:          {s}\n", .{orEmpty(m.created)});
