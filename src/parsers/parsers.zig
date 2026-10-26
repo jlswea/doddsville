@@ -63,7 +63,7 @@ pub const Parser = struct {
     parse: *const fn (a: Allocator, pages: []const Page, diag: *Diag) Error!Result,
 };
 
-pub const all = [_]Parser{scalable.trade};
+pub const all = [_]Parser{ scalable.trade, scalable.statement };
 
 pub fn byName(name: []const u8) ?Parser {
     for (all) |p| if (std.mem.eql(u8, p.name, name)) return p;
