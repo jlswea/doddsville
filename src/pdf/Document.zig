@@ -4,8 +4,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-pub const syntax = @import("syntax.zig");
-pub const CMap = @import("CMap.zig");
+const syntax = @import("syntax.zig");
 const filters = @import("filters.zig");
 const Object = syntax.Object;
 const Ref = syntax.Ref;
