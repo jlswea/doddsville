@@ -276,6 +276,60 @@ pub fn decodeStream(doc: *const Document, s: syntax.Stream) Error![]const u8 {
     return filters.decode(doc.a, s.dict, s.data, doc.decode_limit);
 }
 
+/// Upper bound on pages; statements have a handful.
+pub const max_pages = 1000;
+
+pub const Page = struct {
+    resources: syntax.Dict,
+    /// All content streams, decoded and joined.
+    contents: []const u8,
+};
+
+pub fn pages(doc: *Document) Error![]Page {
+    const root = (try doc.get(doc.trailer, "Root")) orelse return error.BadObject;
+    if (root != .dict) return error.BadObject;
+    const tree = (try doc.get(root.dict, "Pages")) orelse return error.BadObject;
+    if (tree != .dict) return error.BadObject;
+    var list: std.ArrayList(Page) = .empty;
+    try doc.walk(tree.dict, .{}, &list, 0);
+    return list.items;
+}
+
+fn walk(doc: *Document, node: syntax.Dict, inherited: syntax.Dict, list: *std.ArrayList(Page), depth: usize) Error!void {
+    if (depth > syntax.max_depth) return error.TooDeep;
+    const resources = if (try doc.get(node, "Resources")) |r| (if (r == .dict) r.dict else return error.BadObject) else inherited;
+    if (try doc.get(node, "Kids")) |kids| {
+        if (kids != .array) return error.BadObject;
+        for (kids.array) |k| {
+            const kid = try doc.resolve(k);
+            if (kid != .dict) return error.BadObject;
+            try doc.walk(kid.dict, resources, list, depth + 1);
+        }
+        return;
+    }
+    if (list.items.len == max_pages) return error.TooManyObjects;
+    try list.append(doc.a, .{ .resources = resources, .contents = try doc.contents(node) });
+}
+
+fn contents(doc: *Document, page: syntax.Dict) Error![]const u8 {
+    const c = (try doc.get(page, "Contents")) orelse return "";
+    switch (c) {
+        .stream => |s| return doc.decodeStream(s),
+        .array => |parts| {
+            var out: std.ArrayList(u8) = .empty;
+            for (parts) |part| {
+                const s = try doc.resolve(part);
+                if (s != .stream) return error.BadObject;
+                try out.appendSlice(doc.a, try doc.decodeStream(s.stream));
+                // Streams may split between tokens but never inside one.
+                try out.append(doc.a, '\n');
+            }
+            return out.items;
+        },
+        else => return error.BadObject,
+    }
+}
+
 // ------------------------------------------------------------------ tests
 
 const testing = std.testing;
@@ -307,8 +361,8 @@ test "objects resolve through the xref table" {
     var doc = try Document.open(a, src, 1024);
     const root = (try doc.get(doc.trailer, "Root")).?.dict;
     try testing.expect(root.get("Type").?.isName("Catalog"));
-    const pages = (try doc.get(root, "Pages")).?.dict;
-    try testing.expectEqual(@as(i64, 0), pages.get("Count").?.integer);
+    const tree = (try doc.get(root, "Pages")).?.dict;
+    try testing.expectEqual(@as(i64, 0), tree.get("Count").?.integer);
     try testing.expect((try doc.object(.{ .num = 0, .gen = 0 })) == .null);
     try testing.expect((try doc.object(.{ .num = 99, .gen = 0 })) == .null);
 }
@@ -395,10 +449,32 @@ test "xref streams and object streams" {
 
     var doc = try Document.open(a, out.items, 1024);
     const root = (try doc.get(doc.trailer, "Root")).?.dict;
-    const pages = (try doc.get(root, "Pages")).?.dict;
-    try testing.expectEqual(@as(i64, 7), pages.get("Count").?.integer);
+    const tree = (try doc.get(root, "Pages")).?.dict;
+    try testing.expectEqual(@as(i64, 7), tree.get("Count").?.integer);
     try testing.expectEqualStrings("inside", (try doc.object(.{ .num = 4, .gen = 0 })).string);
     try testing.expectEqual(@as(usize, 1), doc.objstms.items.len);
     _ = try doc.object(.{ .num = 3, .gen = 0 });
     try testing.expectEqual(@as(usize, 1), doc.objstms.items.len);
+}
+
+test "page tree: inherited resources and content arrays" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const src = try buildPdf(a, &.{
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 /Resources << /Font << /F1 7 0 R >> >> >>",
+        "<< /Type /Page /Parent 2 0 R /Contents 5 0 R >>",
+        "<< /Type /Page /Parent 2 0 R /Contents [5 0 R 6 0 R] /Resources << /Font << /F2 7 0 R >> >> >>",
+        "<< /Length 5 >>\nstream\nBT ET\nendstream",
+        "<< /Length 1 >>\nstream\nq\nendstream",
+        "<< /Type /Font >>",
+    }, "");
+    var doc = try Document.open(a, src, 1024);
+    const ps = try doc.pages();
+    try testing.expectEqual(@as(usize, 2), ps.len);
+    try testing.expect(ps[0].resources.get("Font").?.dict.get("F1") != null);
+    try testing.expectEqualStrings("BT ET", ps[0].contents);
+    try testing.expect(ps[1].resources.get("Font").?.dict.get("F2") != null);
+    try testing.expectEqualStrings("BT ET\nq\n", ps[1].contents);
 }
