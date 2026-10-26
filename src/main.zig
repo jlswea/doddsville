@@ -462,4 +462,5 @@ test {
     _ = @import("pdf/Document.zig");
     _ = @import("pdf/CMap.zig");
     _ = @import("pdf/pdf.zig");
+    _ = @import("parsers/parsers.zig");
 }
