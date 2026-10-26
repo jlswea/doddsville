@@ -51,7 +51,7 @@ pub const Client = struct {
 
     /// Equivalent of get_paperless_headers: fails when URL/token are missing.
     pub fn init(app: *App) Error!Client {
-        const url = app.config.get("paperless_url") orelse "";
+        const url = app.config.paperless.url orelse "";
         const token = (try app.config.paperlessToken(app.a, app.io, app.environ)) orelse "";
         if (url.len == 0 or token.len == 0) return error.NotConfigured;
         return .{
@@ -395,7 +395,7 @@ pub fn resolveDocArgs(app: *App, doc_args: []const []const u8) !Resolved {
     var abrechnung_id: ?i64 = null;
     if (needs_upload) {
         const cl = if (client_opt) |*cl| cl else {
-            try app.print("  {s}✗{s} Failed: paperless_url and paperless_token must be configured\n", .{ f.RED, f.RESET });
+            try app.print("  {s}✗{s} Failed: .paperless.url and .paperless.keychain must be set in config.zon\n", .{ f.RED, f.RESET });
             return .{ .ids = &.{}, .failed = doc_args };
         };
         const tags = cl.fetchNamed("tags") catch |err| return failAll(app, cl, err, doc_args);
@@ -432,7 +432,7 @@ pub fn resolveDocArgs(app: *App, doc_args: []const []const u8) !Resolved {
             };
             try app.print("Verifying document {d}...\n", .{doc_id});
             const cl = if (client_opt) |*cl| cl else {
-                try app.print("  {s}✗{s} Failed: paperless_url and paperless_token must be configured\n", .{ f.RED, f.RESET });
+                try app.print("  {s}✗{s} Failed: .paperless.url and .paperless.keychain must be set in config.zon\n", .{ f.RED, f.RESET });
                 try failed.append(app.a, arg);
                 continue;
             };
@@ -479,7 +479,7 @@ pub fn insertTransactionDocuments(app: *App, txn_id: i64, doc_ids: []const i64) 
 
 pub fn initMessage(err: anyerror) []const u8 {
     return switch (err) {
-        error.NotConfigured => "paperless_url and paperless_token must be configured",
+        error.NotConfigured => ".paperless.url and .paperless.keychain must be set in config.zon",
         error.Keychain => "could not read the paperless token from the Keychain",
         else => @errorName(err),
     };

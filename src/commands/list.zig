@@ -34,7 +34,7 @@ pub fn run(app: *App, account: ?[]const u8, txn_type: ?[]const u8) !void {
     defer st.finalize();
     try st.bindAll(.{ pattern, txn_type });
 
-    const paperless_url = std.mem.trimEnd(u8, app.config.get("paperless_url") orelse "", "/");
+    const paperless_url = std.mem.trimEnd(u8, app.config.paperless.url orelse "", "/");
     var scratch_buf: [row_scratch_size]u8 = undefined;
     var scratch: std.heap.FixedBufferAllocator = .init(&scratch_buf);
 
