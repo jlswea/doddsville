@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 const f = @import("../format.zig");
 const pdf = @import("../pdf/pdf.zig");
 pub const scalable = @import("scalable.zig");
+pub const llm = @import("llm.zig");
 
 pub const Word = pdf.layout.Word;
 pub const Line = pdf.layout.Line;
@@ -32,6 +33,8 @@ pub const Txn = struct {
     /// Fees and withheld taxes in cents.
     cost: i64 = 0,
     currency: [3]u8 = "EUR".*,
+    /// Multiplier from `currency` to EUR.
+    exchange_rate: f64 = 1.0,
 };
 
 /// A booking the parser recognised but cannot turn into a transaction.
@@ -289,4 +292,5 @@ test "find, findLine and next over a fixture" {
 
 test {
     _ = scalable;
+    _ = llm;
 }
