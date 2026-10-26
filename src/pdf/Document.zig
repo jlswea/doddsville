@@ -21,7 +21,12 @@ const max_sections = 32;
 pub const Entry = union(enum) {
     free,
     offset: usize,
+    /// Object number `index`th in object stream `stream`.
+    compressed: struct { stream: u32, index: u32 },
 };
+
+/// A decoded object stream: `pairs` holds object number and offset, interleaved.
+const ObjStm = struct { num: u32, first: usize, pairs: []const usize, data: []const u8 };
 
 a: Allocator,
 src: []const u8,
@@ -29,7 +34,9 @@ entries: []Entry,
 trailer: syntax.Dict,
 /// Caps every decoded stream.
 decode_limit: usize,
+objstms: std.ArrayList(ObjStm) = .empty,
 
+/// The result refers into `src`, which must outlive it.
 pub fn open(a: Allocator, src: []const u8, decode_limit: usize) Error!Document {
     var doc: Document = .{ .a = a, .src = src, .entries = &.{}, .trailer = .{}, .decode_limit = decode_limit };
     var offset: ?usize = try startXref(src);
@@ -63,6 +70,7 @@ fn readSection(doc: *Document, offset: usize, seen: *std.ArrayList(bool)) Error!
     var p: syntax.Parser = .init(doc.a, doc.src);
     p.lex.pos = offset;
     const kw = (try p.lex.next()) orelse return error.BadXref;
+    if (kw == .integer) return doc.readXrefStream(offset, try intToken(kw), seen);
     if (kw != .keyword or !std.mem.eql(u8, kw.keyword, "xref")) return error.BadXref;
 
     while (true) {
@@ -95,6 +103,71 @@ fn readSection(doc: *Document, offset: usize, seen: *std.ArrayList(bool)) Error!
     return trailer.dict;
 }
 
+/// ISO 32000-1 §7.5.8: binary rows of `/W` big-endian fields.
+fn readXrefStream(doc: *Document, offset: usize, num: usize, seen: *std.ArrayList(bool)) Error!syntax.Dict {
+    if (num > std.math.maxInt(u32)) return error.BadXref;
+    const o = doc.objectAt(offset, .{ .num = @intCast(num), .gen = 0 }) catch return error.BadXref;
+    if (o != .stream or !o.stream.dict.hasName("Type", "XRef")) return error.BadXref;
+    const dict = o.stream.dict;
+
+    const size_obj = dict.get("Size") orelse return error.BadXref;
+    if (size_obj != .integer or size_obj.integer < 0) return error.BadXref;
+    if (size_obj.integer > max_objects) return error.TooManyObjects;
+    const size: usize = @intCast(size_obj.integer);
+    try doc.grow(seen, size);
+
+    var w: [3]usize = undefined;
+    const w_obj = dict.get("W") orelse return error.BadXref;
+    if (w_obj != .array or w_obj.array.len != 3) return error.BadXref;
+    for (w_obj.array, &w) |x, *wi| {
+        if (x != .integer or x.integer < 0 or x.integer > 8) return error.BadXref;
+        wi.* = @intCast(x.integer);
+    }
+    const row_len = w[0] + w[1] + w[2];
+    if (row_len == 0) return error.BadXref;
+
+    const default_index = [_]Object{ .{ .integer = 0 }, size_obj };
+    const index: []const Object = if (dict.get("Index")) |ix| (if (ix == .array) ix.array else return error.BadXref) else &default_index;
+    if (index.len % 2 != 0) return error.BadXref;
+
+    const data = try doc.decodeStream(o.stream);
+    var row: usize = 0;
+    var i: usize = 0;
+    while (i < index.len) : (i += 2) {
+        if (index[i] != .integer or index[i + 1] != .integer or index[i].integer < 0 or index[i + 1].integer < 0) return error.BadXref;
+        const first: usize = @intCast(index[i].integer);
+        const count: usize = @intCast(index[i + 1].integer);
+        if (first + count > size) return error.BadXref;
+        for (first..first + count) |n| {
+            if ((row + 1) * row_len > data.len) return error.BadXref;
+            const r = data[row * row_len ..][0..row_len];
+            row += 1;
+            const kind = if (w[0] == 0) 1 else field(r[0..w[0]]);
+            const f2 = field(r[w[0]..][0..w[1]]);
+            const f3 = field(r[w[0] + w[1] ..][0..w[2]]);
+            if (seen.items[n]) continue;
+            seen.items[n] = true;
+            doc.entries[n] = switch (kind) {
+                0 => .free,
+                1 => if (f2 < doc.src.len) .{ .offset = @intCast(f2) } else return error.BadXref,
+                2 => if (f2 <= std.math.maxInt(u32) and f3 <= std.math.maxInt(u32))
+                    .{ .compressed = .{ .stream = @intCast(f2), .index = @intCast(f3) } }
+                else
+                    return error.BadXref,
+                // Reserved types must be treated as references to the null object.
+                else => .free,
+            };
+        }
+    }
+    return dict;
+}
+
+fn field(bytes: []const u8) u64 {
+    var v: u64 = 0;
+    for (bytes) |b| v = v << 8 | b;
+    return v;
+}
+
 fn intToken(tok: syntax.Token) Error!usize {
     if (tok != .integer or tok.integer < 0) return error.BadXref;
     return @intCast(tok.integer);
@@ -109,24 +182,57 @@ fn grow(doc: *Document, seen: *std.ArrayList(bool), len: usize) Error!void {
 }
 
 /// Missing and free objects are null, as the spec requires.
-pub fn object(doc: *const Document, ref: Ref) Error!Object {
+pub fn object(doc: *Document, ref: Ref) Error!Object {
     if (ref.num >= doc.entries.len) return .null;
     return switch (doc.entries[ref.num]) {
         .free => .null,
         .offset => |off| doc.objectAt(off, ref),
+        .compressed => |c| doc.compressedObject(ref.num, c.stream, c.index),
     };
 }
 
-pub fn resolve(doc: *const Document, o: Object) Error!Object {
+pub fn resolve(doc: *Document, o: Object) Error!Object {
     return if (o == .ref) doc.object(o.ref) else o;
 }
 
-pub fn get(doc: *const Document, d: syntax.Dict, key: []const u8) Error!?Object {
+pub fn get(doc: *Document, d: syntax.Dict, key: []const u8) Error!?Object {
     const v = d.get(key) orelse return null;
     return try doc.resolve(v);
 }
 
-fn objectAt(doc: *const Document, offset: usize, ref: Ref) Error!Object {
+fn compressedObject(doc: *Document, num: u32, stream: u32, index: u32) Error!Object {
+    const os = try doc.objStm(stream);
+    if (index >= os.pairs.len / 2 or os.pairs[2 * index] != num) return error.BadObject;
+    const off = os.first + os.pairs[2 * index + 1];
+    if (off >= os.data.len) return error.BadObject;
+    var p: syntax.Parser = .init(doc.a, os.data);
+    p.lex.pos = off;
+    return p.object();
+}
+
+/// Decoded once and cached: the arena never frees, so re-decoding would leak.
+fn objStm(doc: *Document, num: u32) Error!ObjStm {
+    for (doc.objstms.items) |os| if (os.num == num) return os;
+    if (num >= doc.entries.len or doc.entries[num] != .offset) return error.BadObject;
+    const o = try doc.objectAt(doc.entries[num].offset, .{ .num = num, .gen = 0 });
+    if (o != .stream or !o.stream.dict.hasName("Type", "ObjStm")) return error.BadObject;
+    const n = o.stream.dict.get("N") orelse return error.BadObject;
+    const first = o.stream.dict.get("First") orelse return error.BadObject;
+    if (n != .integer or first != .integer or n.integer < 0 or first.integer < 0 or n.integer > max_objects) return error.BadObject;
+
+    const data = try doc.decodeStream(o.stream);
+    const pairs = try doc.a.alloc(usize, 2 * @as(usize, @intCast(n.integer)));
+    var lex: syntax.Lexer = .{ .src = data };
+    for (pairs) |*v| {
+        const tok = (try lex.next()) orelse return error.BadObject;
+        v.* = intToken(tok) catch return error.BadObject;
+    }
+    const os: ObjStm = .{ .num = num, .first = @intCast(first.integer), .pairs = pairs, .data = data };
+    try doc.objstms.append(doc.a, os);
+    return os;
+}
+
+fn objectAt(doc: *Document, offset: usize, ref: Ref) Error!Object {
     var p: syntax.Parser = .init(doc.a, doc.src);
     p.lex.pos = offset;
     const num = (try p.lex.next()) orelse return error.BadObject;
@@ -146,7 +252,7 @@ fn objectAt(doc: *const Document, offset: usize, ref: Ref) Error!Object {
     return .{ .stream = .{ .dict = o.dict, .data = try doc.streamBytes(o.dict, p.lex.pos) } };
 }
 
-fn streamBytes(doc: *const Document, dict: syntax.Dict, after_keyword: usize) Error![]const u8 {
+fn streamBytes(doc: *Document, dict: syntax.Dict, after_keyword: usize) Error![]const u8 {
     var start = after_keyword;
     if (start < doc.src.len and doc.src[start] == '\r') start += 1;
     if (start < doc.src.len and doc.src[start] == '\n') start += 1;
@@ -198,7 +304,7 @@ test "objects resolve through the xref table" {
         "<< /Type /Catalog /Pages 2 0 R >>",
         "<< /Type /Pages /Kids [] /Count 0 >>",
     }, "");
-    const doc = try Document.open(a, src, 1024);
+    var doc = try Document.open(a, src, 1024);
     const root = (try doc.get(doc.trailer, "Root")).?.dict;
     try testing.expect(root.get("Type").?.isName("Catalog"));
     const pages = (try doc.get(root, "Pages")).?.dict;
@@ -218,7 +324,7 @@ test "streams with direct, indirect and wrong /Length" {
         "5",
         "<< /Length 99 >>\nstream\nwrong\nendstream",
     }, "");
-    const doc = try Document.open(a, src, 1024);
+    var doc = try Document.open(a, src, 1024);
     for ([_][]const u8{ "hello", "world", "wrong" }, [_]u32{ 2, 3, 5 }) |want, num| {
         const s = (try doc.object(.{ .num = num, .gen = 0 })).stream;
         try testing.expectEqualStrings(want, try doc.decodeStream(s));
@@ -238,7 +344,7 @@ test "incremental updates: the newest entry wins" {
     const xref = out.items.len;
     try out.print(a, "xref\n2 1\n{d:0>10} 00000 n \ntrailer\n<< /Size 3 /Root 1 0 R /Prev {d} >>\nstartxref\n{d}\n%%EOF\n", .{ obj, prev, xref });
 
-    const doc = try Document.open(a, out.items, 1024);
+    var doc = try Document.open(a, out.items, 1024);
     try testing.expectEqualStrings("new", (try doc.object(.{ .num = 2, .gen = 0 })).string);
     try testing.expect((try doc.object(.{ .num = 1, .gen = 0 })) == .dict);
 }
@@ -252,7 +358,7 @@ test "broken files are rejected, not trusted" {
     try testing.expectError(error.TooManyObjects, Document.open(a, "xref\n0 1000000\ntrailer<<>>\nstartxref\n0\n", 1024));
 
     const src = try buildPdf(a, &.{ "<< /Type /Catalog >>", "(x)" }, "");
-    const doc = try Document.open(a, src, 1024);
+    var doc = try Document.open(a, src, 1024);
     // An xref entry pointing at the wrong object number.
     doc.entries[2] = doc.entries[1];
     try testing.expectError(error.BadObject, doc.object(.{ .num = 2, .gen = 0 }));
@@ -264,4 +370,35 @@ test "a /Prev cycle stops at max_sections" {
     const a = arena.allocator();
     const src = "xref\n0 1\n0000000000 65535 f \ntrailer\n<< /Size 1 /Prev 0 >>\nstartxref\n0\n%%EOF\n";
     try testing.expectError(error.BadXref, Document.open(a, src, 1024));
+}
+
+test "xref streams and object streams" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(a, "%PDF-1.7\n");
+    const catalog = out.items.len;
+    try out.appendSlice(a, "1 0 obj\n<< /Type /Catalog /Pages 3 0 R >>\nendobj\n");
+    const objstm = out.items.len;
+    const body = "3 0 4 28 << /Type /Pages /Count 7 >> (inside)";
+    try out.print(a, "2 0 obj\n<< /Type /ObjStm /N 2 /First 9 /Length {d} >>\nstream\n{s}\nendstream\nendobj\n", .{ body.len, body });
+    const xref = out.items.len;
+    // W [1 2 1]: type, offset or object stream number, generation or index.
+    var rows: std.ArrayList(u8) = .empty;
+    for ([_][3]usize{ .{ 0, 0, 255 }, .{ 1, catalog, 0 }, .{ 1, objstm, 0 }, .{ 2, 2, 0 }, .{ 2, 2, 1 }, .{ 1, xref, 0 } }) |r| {
+        try rows.appendSlice(a, &.{ @intCast(r[0]), @intCast(r[1] >> 8), @intCast(r[1] & 0xff), @intCast(r[2]) });
+    }
+    try out.print(a, "5 0 obj\n<< /Type /XRef /Size 6 /W [1 2 1] /Index [0 6] /Root 1 0 R /Length {d} >>\nstream\n", .{rows.items.len});
+    try out.appendSlice(a, rows.items);
+    try out.print(a, "\nendstream\nendobj\nstartxref\n{d}\n%%EOF\n", .{xref});
+
+    var doc = try Document.open(a, out.items, 1024);
+    const root = (try doc.get(doc.trailer, "Root")).?.dict;
+    const pages = (try doc.get(root, "Pages")).?.dict;
+    try testing.expectEqual(@as(i64, 7), pages.get("Count").?.integer);
+    try testing.expectEqualStrings("inside", (try doc.object(.{ .num = 4, .gen = 0 })).string);
+    try testing.expectEqual(@as(usize, 1), doc.objstms.items.len);
+    _ = try doc.object(.{ .num = 3, .gen = 0 });
+    try testing.expectEqual(@as(usize, 1), doc.objstms.items.len);
 }
