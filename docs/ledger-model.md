@@ -182,8 +182,8 @@ shown):
 | transfer   | the two linked rows become one transaction with two postings                 |
 
 Cash and Depot are the broker's accounts from `.ledger.brokers`; a broker without
-an entry gets `Assets:<name>:Cash` and `Assets:<name>:Depot`. `dv` never writes
-`config.zon`. Lots are rebuilt by replaying buys and sells in date order. The
+an entry gets `Assets:<name>:Cash` and `Assets:<name>:Depot`, so the migration
+needs no config. Lots are rebuilt by replaying buys and sells in date order. The
 paperless links move from `transaction_document` to the new transactions unchanged.
 
 The migration is a schema version bump like v5 and runs once; a dry run first
