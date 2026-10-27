@@ -86,7 +86,8 @@ pub const Posting = struct {
     /// Cents in `currency` when it is not EUR.
     original: ?i64 = null,
     security: ?i64 = null,
-    /// Millionths of a share, together with `security`.
+    /// Millionths of a share; needs `security`. A security without a quantity
+    /// tags the posting, e.g. a dividend or a cost adjustment.
     quantity: ?i64 = null,
 };
 
@@ -104,7 +105,7 @@ pub fn validate(db: sqlite.Db, t: Txn) Error!void {
     var sum: i64 = 0;
     var owner: ?i64 = null;
     for (t.postings) |p| {
-        if ((p.security == null) != (p.quantity == null)) return error.InvalidPosting;
+        if (p.quantity != null and p.security == null) return error.InvalidPosting;
         if (p.quantity) |q| if (q == 0) return error.InvalidPosting;
         if (!std.mem.eql(u8, p.currency, "EUR") and p.original == null) return error.InvalidPosting;
         sum = std.math.add(i64, sum, p.amount) catch return error.Unbalanced;
@@ -206,7 +207,7 @@ test "transactions must balance and stay with one owner" {
         .{ .account = cash, .amount = -500 }, .{ .account = 99, .amount = 500 },
     } }));
     try testing.expectError(error.InvalidPosting, insert(db, .{ .date = "2024-03-05", .postings = &.{
-        .{ .account = depot, .amount = 500, .security = 1 }, .{ .account = cash, .amount = -500 },
+        .{ .account = depot, .amount = 500, .quantity = 1 }, .{ .account = cash, .amount = -500 },
     } }));
     try testing.expectError(error.InvalidPosting, insert(db, .{ .date = "2024-03-05", .postings = &.{
         .{ .account = cash, .amount = 500, .currency = "USD" }, .{ .account = fees, .amount = -500 },
