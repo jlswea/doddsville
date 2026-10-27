@@ -130,14 +130,14 @@ fn upload(app: *App, path: []const u8, result: parsers.Result, txn_ids: []const 
         meta = try ui.editDocumentMetadata(app, meta, lists);
 
     try app.print("\nUploading {s} to paperless-ngx...\n", .{std.fs.path.basename(path)});
-    const doc_id = cl.upload(path, plan.dv_tag, meta, plan.remove_tags) catch |err| {
+    const up = cl.upload(path, plan.dv_tag, meta, plan.remove_tags) catch |err| {
         try app.print("  {s}Warning: Could not upload to paperless: {s}{s}\n", .{ f.YELLOW, cl.describe(err), f.RESET });
         return manualHint(app, path);
     };
-    try app.print("  {s}✓{s} Uploaded as document {d}\n", .{ f.GREEN, f.RESET, doc_id });
-    for (txn_ids) |tid| try paperless.insertTransactionDocuments(app, tid, &.{doc_id});
+    try paperless.printUploaded(app, up);
+    for (txn_ids) |tid| try paperless.insertTransactionDocuments(app, tid, &.{up.id});
     try app.print("  Linked document to {d} transaction(s)\n", .{txn_ids.len});
-    try paperless.backlink(app, &.{doc_id}, txn_ids);
+    try paperless.backlink(app, &.{up.id}, txn_ids);
 }
 
 fn fetchLists(cl: *paperless.Client) !ui.Lists {
