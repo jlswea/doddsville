@@ -17,6 +17,7 @@ const config_cmd = @import("commands/config.zig");
 const doc_cmd = @import("commands/doc.zig");
 const edit_cmd = @import("commands/edit.zig");
 const import_cmd = @import("commands/import.zig");
+const ledger_cmd = @import("commands/ledger.zig");
 const list_cmd = @import("commands/list.zig");
 const report_cmd = @import("commands/report.zig");
 
@@ -93,6 +94,7 @@ const top_help =
     \\  doc       Manage documents linked to transactions (add, edit)
     \\  config    Manage CLI configuration (show, check)
     \\  import    Import transactions from a broker PDF
+    \\  ledger    Double-entry journal (migrate)
     \\
     \\  sensor: not ported yet; use the Python CLI (pixi run python cli.py ...)
     \\
@@ -243,12 +245,12 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
         return 1;
     }
 
-    const known = [_][]const u8{ "account", "list", "add", "edit", "report", "doc", "import" };
+    const known = [_][]const u8{ "account", "list", "add", "edit", "report", "doc", "import", "ledger" };
     var is_known = false;
     for (known) |k| if (eql(k, command)) {
         is_known = true;
     };
-    if (!is_known) return usage(app, "dv", "argument command: invalid choice: '{s}' (choose from account, list, add, edit, report, doc, config, import, sensor)", .{command});
+    if (!is_known) return usage(app, "dv", "argument command: invalid choice: '{s}' (choose from account, list, add, edit, report, doc, config, import, ledger, sensor)", .{command});
 
     // Parse/validate arguments before touching the database (argparse order).
     const action = try parseCommand(app, command, rest);
@@ -278,6 +280,7 @@ const Action = union(enum) {
     doc_edit: i64,
     import_raw: []const u8,
     import_pdf: import_cmd.Options,
+    ledger_migrate: bool,
 };
 
 fn subcommand(app: *App, prog: []const u8, rest: []const []const u8, comptime choices: []const []const u8) ![]const u8 {
@@ -396,6 +399,16 @@ fn parseCommand(app: *App, command: []const u8, rest: []const []const u8) !Actio
         return .{ .doc_edit = try intArg(app, "dv doc edit", "doc_id", p.pos[0]) };
     }
 
+    if (eql(command, "ledger")) {
+        _ = try subcommand(app, "dv ledger", rest, &.{"migrate"});
+        const p = try parse(app, .{
+            .prog = "dv ledger migrate",
+            .help = "Move the transactions into the double-entry journal and compare old and new figures.",
+            .options = &.{.{ .long = "--dry-run", .dest = "dry_run", .kind = .flag, .help = "Compare only; write nothing" }},
+        }, rest[1..]);
+        return .{ .ledger_migrate = p.flag("dry_run") };
+    }
+
     if (eql(command, "import")) {
         const p = try parse(app, .{
             .prog = "dv import",
@@ -450,6 +463,7 @@ fn execute(app: *App, action: Action) !void {
         .doc_edit => |id| try doc_cmd.edit(app, id),
         .import_raw => unreachable,
         .import_pdf => |o| try import_cmd.run(app, o),
+        .ledger_migrate => |dry| try ledger_cmd.migrate(app, dry),
     }
 }
 

@@ -141,6 +141,105 @@ fn transfer(b: bookings.Book, rows: []const Old, r: Old, total: i64) !i64 {
     return bookings.transfer(b, from, to, r.date, @intCast(@abs(total)));
 }
 
+pub const Check = struct {
+    label: []const u8,
+    old: i64,
+    new: i64,
+    /// Millionths of a share instead of cents.
+    shares: bool = false,
+    /// False for figures that change on purpose (FIFO instead of average cost).
+    must_match: bool = true,
+
+    pub fn ok(c: Check) bool {
+        return !c.must_match or c.old == c.new;
+    }
+};
+
+/// Old figures (as the old reports compute them) next to the journal's.
+pub fn compare(b: bookings.Book) ![]const Check {
+    var out: std.ArrayList(Check) = .empty;
+    const old_sign =
+        \\CASE t.type WHEN 'buy' THEN -1 WHEN 'withdrawal' THEN -1 WHEN 'transfer' THEN 1 ELSE 1 END
+    ;
+    {
+        var st = try b.db.prepare("SELECT a.name, COALESCE(SUM(ROUND(" ++ old_sign ++ " * t.total_value * COALESCE(NULLIF(t.exchange_rate, 0), 1.0)) - COALESCE(t.cost, 0)), 0) FROM account a LEFT JOIN \"transaction\" t ON t.account = a.id GROUP BY a.id ORDER BY a.name");
+        defer st.finalize();
+        while (try st.step()) {
+            const name = (try st.text(b.a, 0)).?;
+            const acc = try b.ledger.broker(b.a, name);
+            try out.append(b.a, .{ .label = try std.fmt.allocPrint(b.a, "{s} cash", .{name}), .old = @intFromFloat(st.float(1)), .new = try bookings.balance(b, acc.cash.?) });
+        }
+    }
+    {
+        var st = try b.db.prepare(
+            \\SELECT a.name, s.id, COALESCE(NULLIF(TRIM(s.name), ''), s.isin),
+            \\       SUM(CASE t.type WHEN 'buy' THEN t.quantity ELSE -t.quantity END)
+            \\FROM "transaction" t JOIN account a ON a.id = t.account JOIN security s ON s.id = t.security
+            \\WHERE t.type IN ('buy', 'sell') GROUP BY a.id, s.id ORDER BY a.name, 3
+        );
+        defer st.finalize();
+        while (try st.step()) {
+            const broker = (try st.text(b.a, 0)).?;
+            try out.append(b.a, .{
+                .label = try std.fmt.allocPrint(b.a, "{s} shares {s}", .{ broker, (try st.text(b.a, 2)) orelse "?" }),
+                .old = st.int(3),
+                .new = try bookings.held(b, broker, st.int(1)),
+                .shares = true,
+            });
+        }
+    }
+    const l = b.ledger.accounts;
+    try out.append(b.a, .{ .label = "Contributions", .old = try sumOld(b, "SUM(CASE t.type WHEN 'deposit' THEN 1 WHEN 'withdrawal' THEN -1 ELSE 0 END * t.total_value * COALESCE(NULLIF(t.exchange_rate, 0), 1.0))"), .new = -try bookings.balance(b, l.contributions) });
+    try out.append(b.a, .{ .label = "Dividends (gross)", .old = try sumOld(b, "SUM(CASE WHEN t.type = 'dividend' THEN ROUND(t.total_value * COALESCE(NULLIF(t.exchange_rate, 0), 1.0)) ELSE 0 END)"), .new = -try bookings.balance(b, l.dividends) });
+    try out.append(b.a, .{ .label = "Interest", .old = try sumOld(b, "SUM(CASE WHEN t.type = 'interest' THEN t.total_value * COALESCE(NULLIF(t.exchange_rate, 0), 1.0) ELSE 0 END)"), .new = -try bookings.balance(b, l.interest) });
+    try out.append(b.a, .{ .label = "Journal sum (must be 0)", .old = 0, .new = try count(b, "SELECT COALESCE(SUM(amount), 0) FROM posting") });
+
+    const old_gains, const old_cost = try averageCost(b);
+    try out.append(b.a, .{ .label = "Realized gains (avg → FIFO)", .old = old_gains, .new = -(try bookings.balance(b, l.gains_shares) + try bookings.balance(b, l.gains_other)), .must_match = false });
+    try out.append(b.a, .{ .label = "Holdings at cost (avg → FIFO)", .old = old_cost, .new = try depotTotal(b), .must_match = false });
+    return out.items;
+}
+
+fn sumOld(b: bookings.Book, expr: []const u8) !i64 {
+    const sql = try std.fmt.allocPrint(b.a, "SELECT COALESCE(CAST(ROUND({s}) AS INTEGER), 0) FROM \"transaction\" t", .{expr});
+    return count(b, sql);
+}
+
+/// The old reports: realized = sell value − buy value × sold / bought per
+/// security; holdings at cost = buy value × held / bought.
+fn averageCost(b: bookings.Book) !struct { i64, i64 } {
+    var st = try b.db.prepare(
+        \\SELECT SUM(CASE WHEN type = 'buy' THEN quantity ELSE 0 END), SUM(CASE WHEN type = 'sell' THEN quantity ELSE 0 END),
+        \\       SUM(CASE WHEN type = 'buy' THEN total_value * COALESCE(NULLIF(exchange_rate, 0), 1.0) ELSE 0 END),
+        \\       SUM(CASE WHEN type = 'sell' THEN total_value * COALESCE(NULLIF(exchange_rate, 0), 1.0) ELSE 0 END)
+        \\FROM "transaction" WHERE type IN ('buy', 'sell') GROUP BY security
+    );
+    defer st.finalize();
+    var gains: i64 = 0;
+    var cost: i64 = 0;
+    while (try st.step()) {
+        const bought = st.int(0);
+        const sold = st.int(1);
+        const buy_value: i64 = @intFromFloat(st.float(2));
+        const sell_value: i64 = @intFromFloat(st.float(3));
+        if (bought <= 0) continue;
+        if (sold > 0) gains += sell_value - @as(i64, @intCast(@divFloor(@as(i128, buy_value) * sold, bought)));
+        if (bought > sold) cost += @intCast(@divFloor(@as(i128, buy_value) * (bought - sold), bought));
+    }
+    return .{ gains, cost };
+}
+
+fn depotTotal(b: bookings.Book) !i64 {
+    var total: i64 = 0;
+    var st = try b.db.prepare("SELECT name FROM account");
+    defer st.finalize();
+    while (try st.step()) {
+        const acc = try b.ledger.broker(b.a, (try st.text(b.a, 0)).?);
+        total += try bookings.balance(b, acc.depot.?);
+    }
+    return total;
+}
+
 // ------------------------------------------------------------------ tests
 
 const testing = std.testing;
@@ -187,6 +286,11 @@ test "old rows become balanced transactions with lots and documents" {
     _ = try st.step();
     try testing.expectEqual(@as(i64, 0), st.int(0));
     try testing.expectEqual(@as(i64, 8), st.int(1));
+
+    for (try compare(b)) |c| testing.expect(c.ok()) catch |err| {
+        std.debug.print("check failed: {s} old={d} new={d}\n", .{ c.label, c.old, c.new });
+        return err;
+    };
 
     // A second run finds nothing new.
     const again = try migrate(b);
