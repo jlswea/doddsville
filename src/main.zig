@@ -485,4 +485,5 @@ test {
     _ = @import("importer.zig");
     _ = @import("paperless.zig");
     _ = @import("journal.zig");
+    _ = @import("bookings.zig");
 }
