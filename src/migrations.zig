@@ -105,7 +105,72 @@ fn m005(db: sqlite.Db) !void {
     try db.exec("UPDATE \"transaction\" SET quantity = quantity * 1000000 WHERE quantity IS NOT NULL");
 }
 
-const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004, m005 };
+/// Double-entry tables (docs/ledger-model.md), empty until the old rows are migrated.
+fn m006(db: sqlite.Db) !void {
+    try db.exec(
+        \\CREATE TABLE IF NOT EXISTS person (
+        \\    id INTEGER PRIMARY KEY,
+        \\    name TEXT NOT NULL UNIQUE
+        \\);
+        \\CREATE TABLE IF NOT EXISTS ledger_account (
+        \\    id INTEGER PRIMARY KEY,
+        \\    name TEXT NOT NULL UNIQUE,
+        \\    kind TEXT NOT NULL CHECK (kind IN ('asset', 'liability', 'equity', 'income', 'expense')),
+        \\    owner INTEGER REFERENCES person (id),
+        \\    CHECK (owner IS NOT NULL OR kind NOT IN ('asset', 'liability'))
+        \\);
+        \\CREATE TABLE IF NOT EXISTS txn (
+        \\    id INTEGER PRIMARY KEY,
+        \\    date DATE NOT NULL,
+        \\    description TEXT NOT NULL DEFAULT ''
+        \\);
+        \\CREATE TABLE IF NOT EXISTS posting (
+        \\    id INTEGER PRIMARY KEY,
+        \\    txn INTEGER NOT NULL REFERENCES txn (id) ON DELETE CASCADE,
+        \\    account INTEGER NOT NULL REFERENCES ledger_account (id),
+        \\    amount INTEGER NOT NULL,
+        \\    currency TEXT NOT NULL DEFAULT 'EUR',
+        \\    original INTEGER,
+        \\    security INTEGER REFERENCES security (id),
+        \\    quantity INTEGER,
+        \\    CHECK ((security IS NULL) = (quantity IS NULL))
+        \\);
+        \\CREATE INDEX IF NOT EXISTS posting_txn ON posting (txn);
+        \\CREATE INDEX IF NOT EXISTS posting_account ON posting (account);
+        \\CREATE TABLE IF NOT EXISTS lot (
+        \\    id INTEGER PRIMARY KEY,
+        \\    account INTEGER NOT NULL REFERENCES ledger_account (id),
+        \\    security INTEGER NOT NULL REFERENCES security (id),
+        \\    txn INTEGER NOT NULL REFERENCES txn (id),
+        \\    opened DATE NOT NULL,
+        \\    quantity INTEGER NOT NULL,
+        \\    cost INTEGER NOT NULL
+        \\);
+        \\CREATE TABLE IF NOT EXISTS lot_close (
+        \\    id INTEGER PRIMARY KEY,
+        \\    lot INTEGER NOT NULL REFERENCES lot (id),
+        \\    txn INTEGER NOT NULL REFERENCES txn (id),
+        \\    quantity INTEGER NOT NULL,
+        \\    cost INTEGER NOT NULL,
+        \\    proceeds INTEGER NOT NULL
+        \\);
+        \\CREATE TABLE IF NOT EXISTS price (
+        \\    security INTEGER NOT NULL REFERENCES security (id),
+        \\    date DATE NOT NULL,
+        \\    price INTEGER NOT NULL,
+        \\    currency TEXT NOT NULL DEFAULT 'EUR',
+        \\    source TEXT NOT NULL,
+        \\    PRIMARY KEY (security, date, source)
+        \\);
+        \\CREATE TABLE IF NOT EXISTS txn_document (
+        \\    txn INTEGER NOT NULL REFERENCES txn (id) ON DELETE CASCADE,
+        \\    paperless_id INTEGER NOT NULL,
+        \\    PRIMARY KEY (txn, paperless_id)
+        \\);
+    );
+}
+
+const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004, m005, m006 };
 
 pub fn run(db: sqlite.Db) !void {
     const current = try version(db);
@@ -124,7 +189,7 @@ test "fresh database migrates to the current schema" {
     const db = try sqlite.Db.open(":memory:");
     defer db.close();
     try run(db);
-    try std.testing.expectEqual(@as(i64, 5), try version(db));
+    try std.testing.expectEqual(@as(i64, 6), try version(db));
     try std.testing.expect(try hasColumn(db, "transaction", "security"));
     try std.testing.expect(try hasColumn(db, "transaction", "exchange_rate"));
     try std.testing.expect(try hasColumn(db, "security", "type"));
@@ -153,4 +218,19 @@ test "v5 scales existing quantities to millionths once" {
     try std.testing.expectEqual(@as(i64, 3_000_000), st.int(0));
     _ = try st.step();
     try std.testing.expect(st.isNull(0));
+}
+
+test "v6 constraints: asset accounts need an owner, postings pair security and quantity" {
+    const db = try sqlite.Db.open(":memory:");
+    defer db.close();
+    try run(db);
+    try db.exec("PRAGMA foreign_keys = ON;");
+    try db.exec("INSERT INTO person (name) VALUES ('Name')");
+    try db.exec("INSERT INTO ledger_account (name, kind, owner) VALUES ('Assets:Cash', 'asset', 1)");
+    try db.exec("INSERT INTO ledger_account (name, kind) VALUES ('Income:Dividends', 'income')");
+    try std.testing.expectError(error.Constraint, db.exec("INSERT INTO ledger_account (name, kind) VALUES ('Assets:Depot', 'asset')"));
+    try std.testing.expectError(error.Constraint, db.exec("INSERT INTO ledger_account (name, kind, owner) VALUES ('Other:X', 'other', 1)"));
+    try db.exec("INSERT INTO txn (date) VALUES ('2024-01-01')");
+    try std.testing.expectError(error.Constraint, db.exec("INSERT INTO posting (txn, account, amount, quantity) VALUES (1, 1, 100, 5)"));
+    try std.testing.expectError(error.Constraint, db.exec("INSERT INTO posting (txn, account, amount) VALUES (1, 99, 100)"));
 }
