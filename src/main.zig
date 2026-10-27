@@ -484,4 +484,5 @@ test {
     _ = @import("commands/import.zig");
     _ = @import("importer.zig");
     _ = @import("paperless.zig");
+    _ = @import("journal.zig");
 }
