@@ -259,6 +259,35 @@ fn sellInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
     return id;
 }
 
+pub const Dividend = struct {
+    date: []const u8,
+    security: i64,
+    /// Gross amount in EUR cents, before withholding.
+    gross: i64,
+    taxes: Taxes = .{},
+    /// For dividends paid in another currency: its code and the gross amount in it.
+    currency: []const u8 = "EUR",
+    original: ?i64 = null,
+};
+
+/// Cash + net, withheld taxes as expenses, the gross as income tagged with the
+/// security.
+pub fn dividend(b: Book, broker: []const u8, d: Dividend) Error!i64 {
+    try positive(d.gross);
+    const acc = try b.broker(broker);
+    var postings: std.ArrayList(journal.Posting) = .empty;
+    try postings.append(b.a, .{ .account = acc.cash, .amount = d.gross - d.taxes.total() });
+    try appendTaxes(b, &postings, d.taxes, 1);
+    try postings.append(b.a, .{
+        .account = try b.role(b.ledger.accounts.dividends),
+        .amount = -d.gross,
+        .security = d.security,
+        .currency = d.currency,
+        .original = if (d.original) |o| -o else null,
+    });
+    return journal.insert(b.db, .{ .date = d.date, .description = "dividend", .postings = postings.items });
+}
+
 /// Shares held in a broker's depot, in millionths.
 pub fn held(b: Book, broker: []const u8, security: i64) Error!i64 {
     const acc = try b.broker(broker);
@@ -381,4 +410,28 @@ test "fractional ETF shares go to the other gains account" {
     // Cost of a third of the lot, floored: 33334 × 1111111 / 3333333 = 11111.33… → 11111.
     try testing.expectEqual(@as(i64, -(12000 - 11111)), try balance(b, "Income:Gains:Other"));
     try testing.expectEqual(@as(i64, 33334 - 11111), try balance(b, "Assets:Scalable:Depot"));
+}
+
+test "dividends: net to cash, withholding as expense, gross as income" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const b = try testBook(arena.allocator(), .{ .owner = "Name" });
+    defer b.db.close();
+    try b.db.exec("INSERT INTO security (isin, name) VALUES ('US0378331005', 'Example Inc.')");
+
+    // $12.40 gross = €11.34; 15 % US withholding, German tax after crediting it.
+    _ = try dividend(b, "Scalable", .{ .date = "2024-03-17", .security = 1, .gross = 1134, .taxes = .{ .quellensteuer = 170, .kapest = 114, .soli = 6 }, .currency = "USD", .original = 1240 });
+    try testing.expectEqual(@as(i64, 1134 - 290), try balance(b, "Assets:Scalable:Cash"));
+    try testing.expectEqual(@as(i64, -1134), try balance(b, "Income:Dividends"));
+    try testing.expectEqual(@as(i64, 170), try balance(b, "Expenses:Tax:Quellensteuer"));
+
+    var st = try b.db.prepare("SELECT security, quantity IS NULL, currency, original FROM posting p JOIN ledger_account a ON a.id = p.account WHERE a.name = 'Income:Dividends'");
+    defer st.finalize();
+    _ = try st.step();
+    try testing.expectEqual(@as(i64, 1), st.int(0));
+    try testing.expectEqual(@as(i64, 1), st.int(1));
+    try testing.expectEqualStrings("USD", st.textRef(2).?);
+    try testing.expectEqual(@as(i64, -1240), st.int(3));
+
+    try testing.expectError(error.InvalidPosting, dividend(b, "Scalable", .{ .date = "2024-03-17", .security = 1, .gross = 100, .currency = "USD" }));
 }
