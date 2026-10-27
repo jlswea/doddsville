@@ -162,6 +162,10 @@ fn m006(db: sqlite.Db) !void {
         \\    source TEXT NOT NULL,
         \\    PRIMARY KEY (security, date, source)
         \\);
+        \\CREATE TABLE IF NOT EXISTS migrated_transaction (
+        \\    old INTEGER PRIMARY KEY,
+        \\    txn INTEGER NOT NULL REFERENCES txn (id)
+        \\);
         \\CREATE TABLE IF NOT EXISTS txn_document (
         \\    txn INTEGER NOT NULL REFERENCES txn (id) ON DELETE CASCADE,
         \\    paperless_id INTEGER NOT NULL,
