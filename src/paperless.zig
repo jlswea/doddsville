@@ -73,10 +73,14 @@ pub const Client = struct {
         };
     }
 
+    /// A pooled keep-alive connection may have been closed by the server while
+    /// idle (e.g. while the user edits metadata). The server then answers
+    /// nothing, so one retry on a fresh connection is safe; requests and the
+    /// upload both do that.
     pub fn request(c: *Client, method: std.http.Method, path: []const u8, payload: ?[]const u8, content_type: ?[]const u8) Error!Response {
         const url = try c.app.fmt("{s}{s}", .{ c.base_url, path });
         var body: Io.Writer = .fixed(&response_buf);
-        const result = c.http.fetch(.{
+        const options: std.http.Client.FetchOptions = .{
             .location = .{ .url = url },
             .method = method,
             .payload = payload,
@@ -88,7 +92,14 @@ pub const Client = struct {
                 // Compressed responses would need a decompression window allocated per request.
                 .accept_encoding = .{ .override = "identity" },
             },
-        }) catch |err| return c.transportError(err, url);
+        };
+        const result = c.http.fetch(options) catch |err| switch (err) {
+            error.HttpConnectionClosing => retry: {
+                body = .fixed(&response_buf);
+                break :retry c.http.fetch(options) catch |e| return c.transportError(e, url);
+            },
+            else => return c.transportError(err, url),
+        };
         return .{ .status = result.status, .body = received(body.buffered()) };
     }
 
@@ -286,8 +297,12 @@ pub const Client = struct {
 
         const post_path = "/api/documents/post_document/";
         const url = try c.app.fmt("{s}{s}", .{ c.base_url, post_path });
-        const sent = c.postFile(url, "multipart/form-data; boundary=" ++ boundary, head, file, size, tail.items) catch |err|
-            return c.transportError(err, url);
+        const content_type = "multipart/form-data; boundary=" ++ boundary;
+        const sent = c.postFile(url, content_type, head, file, size, tail.items) catch |err| switch (err) {
+            error.HttpConnectionClosing => c.postFile(url, content_type, head, file, size, tail.items) catch |e|
+                return c.transportError(e, url),
+            else => return c.transportError(err, url),
+        };
         const r = try c.checkStatus(sent, post_path);
         const task_id = try a.dupe(u8, std.mem.trim(u8, f.strip(r.body), "\""));
 
