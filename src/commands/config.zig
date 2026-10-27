@@ -15,9 +15,16 @@ pub fn show(app: *App) !void {
     try app.print("  paperless.keychain: {s}\n", .{c.paperless.keychain orelse "(not set)"});
     try app.print("  ollama.url: {s}\n", .{c.ollama.url});
     try app.print("  ollama.model: {s}\n", .{c.ollama.model});
+    try app.print("  ledger.owner: {s}\n", .{c.ledger.owner});
 }
 
 pub fn check(app: *App) !void {
+    const misplaced = try app.config.ledger.misplaced(app.a);
+    if (misplaced.len > 0) {
+        try app.print("{s}Ledger accounts under the wrong top level:{s}\n", .{ f.RED, f.RESET });
+        for (misplaced) |name| try app.print("  {s}✗{s} {s}\n", .{ f.RED, f.RESET, name });
+        try app.line("");
+    }
     try app.print("{s}Checking paperless-ngx connection...{s}\n\n", .{ f.BOLD, f.RESET });
     const url = app.config.paperless.url;
     var keychain_failed = false;
