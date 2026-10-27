@@ -25,6 +25,28 @@ pub const Error = error{ NotConfigured, Keychain, Http, Connection, UploadFailed
 
 pub const Response = struct { status: std.http.Status, body: []const u8 };
 
+pub const Uploaded = struct { id: i64, existing: bool = false };
+
+/// The consumer's refusal "Not consuming x.pdf: It is a duplicate of x (#238)."
+/// names the document that already holds the file. One in the trash is not
+/// reused, so the upload fails as before.
+pub fn duplicateOf(message: []const u8) ?i64 {
+    if (std.ascii.findIgnoreCase(message, "duplicate") == null) return null;
+    if (std.ascii.findIgnoreCase(message, "trash") != null) return null;
+    const open = std.mem.lastIndexOf(u8, message, "(#") orelse return null;
+    const close = std.mem.indexOfScalarPos(u8, message, open, ')') orelse return null;
+    const id = std.fmt.parseInt(i64, message[open + 2 .. close], 10) catch return null;
+    return if (id > 0) id else null;
+}
+
+test "duplicateOf" {
+    try std.testing.expectEqual(@as(?i64, 238), duplicateOf("download-5.pdf: Not consuming download-5.pdf: It is a duplicate of download-5 (#238)."));
+    try std.testing.expectEqual(@as(?i64, null), duplicateOf("Not consuming x.pdf: It is a duplicate of x (#12). Note: existing document is in the trash."));
+    try std.testing.expectEqual(@as(?i64, null), duplicateOf("Not consuming x.pdf: OCR failed (#3)"));
+    try std.testing.expectEqual(@as(?i64, null), duplicateOf("It is a duplicate of x (#abc)."));
+    try std.testing.expectEqual(@as(?i64, null), duplicateOf("None"));
+}
+
 pub const max_response_size = 256 * 1024;
 
 // The document detail endpoint otherwise includes the full OCR text (`content`), which dv never uses.
@@ -261,7 +283,9 @@ pub const Client = struct {
     }
 
     /// POST /api/documents/post_document/ and wait for the consumer task.
-    pub fn upload(c: *Client, file_path: []const u8, dv_tag_id: i64, metadata: ?DocumentMetadata, remove_tag_ids: []const i64) (Error || error{ReadFailed})!i64 {
+    /// A file Paperless already has comes back as that existing document,
+    /// left unchanged.
+    pub fn upload(c: *Client, file_path: []const u8, dv_tag_id: i64, metadata: ?DocumentMetadata, remove_tag_ids: []const i64) (Error || error{ReadFailed})!Uploaded {
         const a = c.app.a;
         const io = c.app.io;
         const file = Io.Dir.cwd().openFile(io, file_path, .{}) catch |err| {
@@ -318,8 +342,9 @@ pub const Client = struct {
                 doc_id = asInt(field(t, "related_document")) orelse return error.BadResponse;
                 break;
             } else if (std.mem.eql(u8, status, "FAILURE")) {
-                const res = field(t, "result");
-                c.last_error = try c.app.fmt("Document upload failed: {s}", .{if (res) |v| (asStr(v) orelse "?") else "None"});
+                const res = if (field(t, "result")) |v| (asStr(v) orelse "?") else "None";
+                if (duplicateOf(res)) |existing| return .{ .id = existing, .existing = true };
+                c.last_error = try c.app.fmt("Document upload failed: {s}", .{res});
                 return error.UploadFailed;
             }
         }
@@ -342,7 +367,7 @@ pub const Client = struct {
             };
             if (removed) _ = c.request(.PATCH, path, try json.Stringify.valueAlloc(a, .{ .tags = current.items }, .{}), "application/json") catch {};
         }
-        return id;
+        return .{ .id = id };
     }
 };
 
@@ -467,19 +492,26 @@ pub fn resolveDocArgs(app: *App, doc_args: []const []const u8) !Resolved {
             const cl = &client_opt.?; // checked above
             try app.print("Uploading {s} to paperless-ngx...\n", .{arg});
             const tag_ids = try app.a.dupe(i64, &.{dv_tag_id.?});
-            const doc_id = cl.upload(arg, dv_tag_id.?, .{ .tag_ids = tag_ids, .document_type_id = abrechnung_id }, remove_tag_ids.items) catch |err| {
+            const up = cl.upload(arg, dv_tag_id.?, .{ .tag_ids = tag_ids, .document_type_id = abrechnung_id }, remove_tag_ids.items) catch |err| {
                 try app.print("  {s}✗{s} Failed: {s}\n", .{ f.RED, f.RESET, cl.describe(err) });
                 try failed.append(app.a, arg);
                 continue;
             };
-            try app.print("  {s}✓{s} Uploaded as document {d}\n", .{ f.GREEN, f.RESET, doc_id });
-            try ids.append(app.a, doc_id);
+            try printUploaded(app, up);
+            try ids.append(app.a, up.id);
         } else {
             try app.print("  {s}✗{s} {s} is not a valid ID or file path\n", .{ f.RED, f.RESET, arg });
             try failed.append(app.a, arg);
         }
     }
     return .{ .ids = ids.items, .failed = failed.items };
+}
+
+pub fn printUploaded(app: *App, up: Uploaded) !void {
+    if (up.existing)
+        try app.print("  {s}✓{s} Already in paperless as document {d}; linking that one\n", .{ f.GREEN, f.RESET, up.id })
+    else
+        try app.print("  {s}✓{s} Uploaded as document {d}\n", .{ f.GREEN, f.RESET, up.id });
 }
 
 fn failAll(app: *App, cl: *Client, err: anyerror, doc_args: []const []const u8) !Resolved {
