@@ -247,7 +247,7 @@ CREATE TABLE posting (
     original INTEGER,               -- cents in `currency` when it is not EUR
     security INTEGER REFERENCES security (id),
     quantity INTEGER,               -- millionths of a share, with `security`
-    CHECK ((security IS NULL) = (quantity IS NULL))
+    CHECK (quantity IS NULL OR security IS NOT NULL)
 );
 CREATE TABLE lot (
     id INTEGER PRIMARY KEY,

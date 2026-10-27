@@ -133,7 +133,7 @@ fn m006(db: sqlite.Db) !void {
         \\    original INTEGER,
         \\    security INTEGER REFERENCES security (id),
         \\    quantity INTEGER,
-        \\    CHECK ((security IS NULL) = (quantity IS NULL))
+        \\    CHECK (quantity IS NULL OR security IS NOT NULL)
         \\);
         \\CREATE INDEX IF NOT EXISTS posting_txn ON posting (txn);
         \\CREATE INDEX IF NOT EXISTS posting_account ON posting (account);
@@ -220,7 +220,7 @@ test "v5 scales existing quantities to millionths once" {
     try std.testing.expect(st.isNull(0));
 }
 
-test "v6 constraints: asset accounts need an owner, postings pair security and quantity" {
+test "v6 constraints: asset accounts need an owner, a quantity needs a security" {
     const db = try sqlite.Db.open(":memory:");
     defer db.close();
     try run(db);
