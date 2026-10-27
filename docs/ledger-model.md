@@ -195,21 +195,105 @@ prints the old and new reports side by side.
   value. That needs a `price(security, date, price, currency, source)` table and a
   price source; the balance sheet uses the latest price on or before its date and
   marks positions without one. Unrealized gains follow from cost vs. market value.
-- **Several people in one ledger.** Every account gets an **owner**: a person or
-  `joint`. Tax reports run per person; for joint accounts the owner's share is
-  needed (50/50 by default). Names may carry the owner as a convention
-  (`Assets:Name:Scalable:Cash`, `Assets:Joint:Girokonto`), but the owner is
-  stored on the account, not parsed from the name.
+- **Several people in one ledger.** Asset and liability accounts have an
+  **owner**, a person; there are no joint accounts for now. Income and expense
+  postings belong to the owner of the asset or liability accounts in the same
+  transaction, so a transaction may only touch one owner's accounts. Names may
+  carry the owner as a convention (`Assets:Name:Scalable:Cash`), but the owner
+  is stored on the account, not parsed from the name.
+- **Allowances across persons.** The tax helper reports per person; whether
+  allowances are combined across persons is a setting.
 - **Taxes: capital income first, more later.** The tax helper covers Anlage KAP. The
   account tree stays general, so salary, rent or other income can be added as
   `Income:*` accounts with their own reports later.
-- **Bank accounts too.** A Girokonto is just another `Assets:*` account; importing
-  bank statements (CSV or PDF) is a later step, like the broker parsers. Transfers
+- **Bank accounts too.** A Girokonto is just another `Assets:*` account.
+  Parsers for bank statements are a later step, like the broker parsers. Transfers
   between Girokonto and broker become one transaction with two cash postings.
 
 ## Open questions
 
 - Price source for market values (daily close per ISIN), and how often to fetch.
-- Owners: which people, and are joint accounts split 50/50 or configurable?
-- Whether and how the tax helper combines allowances across persons.
-- Bank statement formats to support first (which banks, CSV or PDF)?
+
+## Implementation plan
+
+New tables next to the old ones; the old `account`/`transaction` tables are
+dropped only once every command uses the new ones.
+
+```sql
+CREATE TABLE person (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE
+);
+CREATE TABLE ledger_account (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,      -- full name, e.g. Assets:Name:Scalable:Cash
+    kind TEXT NOT NULL CHECK (kind IN ('asset', 'liability', 'equity', 'income', 'expense')),
+    owner INTEGER REFERENCES person (id),  -- required for asset and liability
+    CHECK (owner IS NOT NULL OR kind NOT IN ('asset', 'liability'))
+);
+CREATE TABLE txn (
+    id INTEGER PRIMARY KEY,
+    date DATE NOT NULL,
+    description TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE posting (
+    id INTEGER PRIMARY KEY,
+    txn INTEGER NOT NULL REFERENCES txn (id) ON DELETE CASCADE,
+    account INTEGER NOT NULL REFERENCES ledger_account (id),
+    amount INTEGER NOT NULL,        -- EUR cents; these sum to zero per txn
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    original INTEGER,               -- cents in `currency` when it is not EUR
+    security INTEGER REFERENCES security (id),
+    quantity INTEGER,               -- millionths of a share, with `security`
+    CHECK ((security IS NULL) = (quantity IS NULL))
+);
+CREATE TABLE lot (
+    id INTEGER PRIMARY KEY,
+    account INTEGER NOT NULL REFERENCES ledger_account (id),
+    security INTEGER NOT NULL REFERENCES security (id),
+    txn INTEGER NOT NULL REFERENCES txn (id),   -- the buy that opened it
+    opened DATE NOT NULL,
+    quantity INTEGER NOT NULL,      -- millionths
+    cost INTEGER NOT NULL           -- EUR cents, raised by Vorabpauschalen
+);
+CREATE TABLE lot_close (
+    id INTEGER PRIMARY KEY,
+    lot INTEGER NOT NULL REFERENCES lot (id),
+    txn INTEGER NOT NULL REFERENCES txn (id),   -- the sell
+    quantity INTEGER NOT NULL,
+    cost INTEGER NOT NULL,          -- share of the lot's cost
+    proceeds INTEGER NOT NULL
+);
+CREATE TABLE price (
+    security INTEGER NOT NULL REFERENCES security (id),
+    date DATE NOT NULL,
+    price INTEGER NOT NULL,         -- cents per share
+    currency TEXT NOT NULL DEFAULT 'EUR',
+    source TEXT NOT NULL,
+    PRIMARY KEY (security, date, source)
+);
+CREATE TABLE txn_document (
+    txn INTEGER NOT NULL REFERENCES txn (id) ON DELETE CASCADE,
+    paperless_id INTEGER NOT NULL,
+    PRIMARY KEY (txn, paperless_id)
+);
+```
+
+`dv` checks before every commit that a transaction's postings sum to zero and
+touch only one owner's asset and liability accounts, like the transfer check today.
+
+Steps, each one commit or a few:
+
+1. v6: create the tables above (empty), Zig types for transactions and postings,
+   the balance and owner checks.
+2. Posting builders for the shortcuts (buy, sell with FIFO lots, dividend, interest,
+   deposit, withdrawal, transfer), tested on an in-memory database.
+3. Migration of the existing rows into the new tables, with a dry run comparing old
+   and new reports. Needs the owner of the existing broker accounts.
+4. Commands one by one on the new tables: `add`, `list`, `edit`, `doc`, `import`
+   (parsers produce postings), then `report`.
+5. New reports: balance sheet, income statement, tax helper.
+6. Drop the old tables.
+7. Later: prices, bank statement parsers, `dv add txn` for free-form postings.
+
+Until step 6 the branch's `dv` should not be used on the real database.
