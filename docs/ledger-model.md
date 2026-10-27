@@ -100,27 +100,29 @@ later means renaming the stored accounts too; a `dv account rename` would do bot
 
 ## Examples
 
-Buy 10 shares at €100 with €1 fee:
+Buy 10 shares at €100 with €1 fee. Trade fees are part of the purchase cost
+(Anschaffungsnebenkosten), so they go into the depot and the lot's cost, not into
+`Expenses:Fees`; otherwise they would count twice when the shares are sold. Only
+fees not tied to a trade, e.g. custody fees, are expenses.
 
 ```
-Assets:Scalable:Depot     +10 ACME @ 100.00   +1000.00
-Expenses:Fees                                     +1.00
+Assets:Scalable:Depot     +10 ACME (cost)     +1001.00
 Assets:Scalable:Cash                           -1001.00
 ```
 
-Sell 4 of them at €130 (FIFO lot cost €400), €1 fee. The taxable gain is
-€520 − €400 − €1 = €119, so 25 % KapESt (€29.75) plus 5.5 % Soli on it (€1.64):
+Sell 4 of them at €130 with €1 fee. The FIFO lot cost is 4/10 of €1,001 = €400.40,
+so the gain is €520 − €1 − €400.40 = €118.60; 25 % KapESt (€29.65) plus 5.5 % Soli
+on it (€1.63):
 
 ```
-Assets:Scalable:Cash                            +487.61
-Expenses:Fees                                     +1.00
-Expenses:Tax:KapESt                              +29.75
-Expenses:Tax:Soli                                 +1.64
-Assets:Scalable:Depot     -4 ACME (lot cost)    -400.00
-Income:Gains:Shares                             -120.00
+Assets:Scalable:Cash                            +487.72
+Expenses:Tax:KapESt                              +29.65
+Expenses:Tax:Soli                                 +1.63
+Assets:Scalable:Depot     -4 ACME (lot cost)    -400.40
+Income:Gains:Shares                             -118.60
 ```
 
-The gain is booked gross; the tax helper nets the sale's fees against it.
+Sale fees reduce the gain directly, so the gain account holds what is taxable.
 
 Dividend of €50 with 15% US withholding:
 
