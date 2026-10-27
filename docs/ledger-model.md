@@ -189,10 +189,27 @@ paperless links move from `transaction_document` to the new transactions unchang
 The migration is a schema version bump like v5 and runs once; a dry run first
 prints the old and new reports side by side.
 
+## Decisions
+
+- **Market values on the balance sheet.** Holdings are shown at cost and at market
+  value. That needs a `price(security, date, price, currency, source)` table and a
+  price source; the balance sheet uses the latest price on or before its date and
+  marks positions without one. Unrealized gains follow from cost vs. market value.
+- **Several people in one ledger.** Every account gets an **owner**: a person or
+  `joint`. Tax reports run per person; for joint accounts the owner's share is
+  needed (50/50 by default). Names may carry the owner as a convention
+  (`Assets:Name:Scalable:Cash`, `Assets:Joint:Girokonto`), but the owner is
+  stored on the account, not parsed from the name.
+- **Taxes: capital income first, more later.** The tax helper covers Anlage KAP. The
+  account tree stays general, so salary, rent or other income can be added as
+  `Income:*` accounts with their own reports later.
+- **Bank accounts too.** A Girokonto is just another `Assets:*` account; importing
+  bank statements (CSV or PDF) is a later step, like the broker parsers. Transfers
+  between Girokonto and broker become one transaction with two cash postings.
+
 ## Open questions
 
-- Balance sheet at cost only, or with market prices (which needs a price source)?
-- One ledger for the whole family, or one per person with shared accounts?
-- Taxes only for capital income, or other income too later?
-- Cash accounts outside the broker (Girokonto) from bank statements, or only
-  what flows through the broker?
+- Price source for market values (daily close per ISIN), and how often to fetch.
+- Owners: which people, and are joint accounts split 50/50 or configurable?
+- Whether and how the tax helper combines allowances across persons.
+- Bank statement formats to support first (which banks, CSV or PDF)?
