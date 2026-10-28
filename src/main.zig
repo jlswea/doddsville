@@ -96,7 +96,7 @@ const top_help =
     \\  doc       Manage documents linked to transactions (add, edit)
     \\  config    Manage CLI configuration (show, check)
     \\  import    Import transactions from a broker PDF
-    \\  ledger    Double-entry journal (migrate, export)
+    \\  ledger    Double-entry journal (export)
     \\
     \\  sensor: not ported yet; use the Python CLI (pixi run python cli.py ...)
     \\
@@ -264,11 +264,32 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
     const db_path = db_flag orelse app.config.db;
     app.db = try sqlite.Db.open(try app.a.dupeSentinel(u8, db_path, 0));
     defer app.db.close();
-    try migrations.run(app.db);
+    if (try migrations.convertsOldRows(app.db)) try backup(app, db_path);
+    migrations.run(app.db, .{ .a = app.a, .ledger = app.config.ledger }) catch |err| switch (err) {
+        error.ConversionMismatch => {
+            try app.print("{s}Turning the transactions into the journal changed a figure that must stay the same; the database was left as it was.{s}\n", .{ f.RED, f.RESET });
+            return 1;
+        },
+        else => return err,
+    };
     try app.db.exec("PRAGMA foreign_keys = ON;");
 
     try execute(app, action);
     return 0;
+}
+
+/// A copy of the file before the old rows are converted and dropped. An
+/// existing copy from an earlier attempt is kept.
+fn backup(app: *App, db_path: []const u8) !void {
+    const path = try app.fmt("{s}.before-journal.db", .{db_path});
+    var st = try app.db.prepare("VACUUM INTO ?");
+    defer st.finalize();
+    try st.bindAll(.{path});
+    _ = st.step() catch {
+        if (std.mem.indexOf(u8, app.db.errmsg(), "exists") != null) return;
+        return error.BackupFailed;
+    };
+    try app.print("Saved a copy of the database before converting it to the journal: {s}\n", .{path});
 }
 
 const Action = union(enum) {
@@ -284,7 +305,6 @@ const Action = union(enum) {
     doc_edit: i64,
     import_raw: []const u8,
     import_pdf: import_cmd.Options,
-    ledger_migrate: bool,
     ledger_export,
 };
 
@@ -415,17 +435,9 @@ fn parseCommand(app: *App, command: []const u8, rest: []const []const u8) !Actio
     }
 
     if (eql(command, "ledger")) {
-        const sub = try subcommand(app, "dv ledger", rest, &.{ "migrate", "export" });
-        if (eql(sub, "export")) {
-            _ = try parse(app, .{ .prog = "dv ledger export", .help = "Print the journal as beancount text, e.g. for bean-check." }, rest[1..]);
-            return .ledger_export;
-        }
-        const p = try parse(app, .{
-            .prog = "dv ledger migrate",
-            .help = "Move the transactions into the double-entry journal and compare old and new figures.",
-            .options = &.{.{ .long = "--dry-run", .dest = "dry_run", .kind = .flag, .help = "Compare only; write nothing" }},
-        }, rest[1..]);
-        return .{ .ledger_migrate = p.flag("dry_run") };
+        _ = try subcommand(app, "dv ledger", rest, &.{"export"});
+        _ = try parse(app, .{ .prog = "dv ledger export", .help = "Print the journal as beancount text, e.g. for bean-check." }, rest[1..]);
+        return .ledger_export;
     }
 
     if (eql(command, "import")) {
@@ -484,7 +496,6 @@ fn execute(app: *App, action: Action) !void {
         .doc_edit => |id| try doc_cmd.edit(app, id),
         .import_raw => unreachable,
         .import_pdf => |o| try import_cmd.run(app, o),
-        .ledger_migrate => |dry| try ledger_cmd.migrate(app, dry),
         .ledger_export => try ledger_cmd.exportBeancount(app),
     }
 }

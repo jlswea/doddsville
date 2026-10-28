@@ -248,8 +248,11 @@ const testing = std.testing;
 test "old rows become balanced transactions with lots and documents" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
-    const b = try bookings.testBook(arena.allocator(), .{ .owner = "Name" });
-    defer b.db.close();
+    const db = try sqlite.Db.open(":memory:");
+    defer db.close();
+    try @import("migrations.zig").runTo(db, .{ .a = arena.allocator() }, 8);
+    try db.exec("PRAGMA foreign_keys = ON;");
+    const b: bookings.Book = .{ .db = db, .a = arena.allocator(), .ledger = .{ .owner = "Name" } };
     try b.db.exec(
         \\INSERT INTO account (name) VALUES ('Scalable'), ('Bank');
         \\INSERT INTO security (isin, name, type) VALUES ('US0378331005', 'Example Inc.', 'stock');

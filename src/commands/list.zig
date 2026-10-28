@@ -3,7 +3,6 @@
 const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
-const ledger_cmd = @import("ledger.zig");
 
 // Binding NULL disables a filter. A trade's total is its Kurswert, a
 // dividend's or interest's the gross income; anything else shows its size.
@@ -31,7 +30,6 @@ const rows_sql =
 const row_scratch_size = 16 * 1024;
 
 pub fn run(app: *App, account: ?[]const u8, txn_type: ?[]const u8) !void {
-    try ledger_cmd.sync(app);
 
     var pattern_buf: [256]u8 = undefined;
     const pattern: ?[]const u8 = if (account) |acc|

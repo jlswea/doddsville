@@ -447,7 +447,7 @@ const testing = std.testing;
 
 pub fn testBook(a: Allocator, ledger: Config.Ledger) !Book {
     const db = try sqlite.Db.open(":memory:");
-    try @import("migrations.zig").run(db);
+    try @import("migrations.zig").run(db, .{ .a = a });
     try db.exec("PRAGMA foreign_keys = ON;");
     return .{ .db = db, .a = a, .ledger = ledger };
 }
