@@ -4,12 +4,10 @@ const std = @import("std");
 const json = std.json;
 const App = @import("../App.zig");
 const f = @import("../format.zig");
-const ledger_cmd = @import("ledger.zig");
 const paperless = @import("../paperless.zig");
 const ui = @import("../ui.zig");
 
 pub fn add(app: *App, txn_id: i64, docs: []const []const u8) !void {
-    try ledger_cmd.sync(app);
     {
         var st = try app.db.prepare("SELECT id FROM txn WHERE id = ?");
         defer st.finalize();

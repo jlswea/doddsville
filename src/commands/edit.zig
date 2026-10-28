@@ -6,7 +6,6 @@ const std = @import("std");
 const App = @import("../App.zig");
 const bookings = @import("../bookings.zig");
 const f = @import("../format.zig");
-const ledger_cmd = @import("ledger.zig");
 const lookup = @import("../lookup.zig");
 const ui = @import("../ui.zig");
 
@@ -22,7 +21,6 @@ const Loaded = struct {
 };
 
 pub fn run(app: *App, txn_id: i64) !void {
-    try ledger_cmd.sync(app);
     const b: bookings.Book = .{ .db = app.db, .a = app.a, .ledger = app.config.ledger };
     const t = (try load(b, txn_id)) orelse {
         try app.print("{s}Transaction {d} not found.{s}\n", .{ f.RED, txn_id, f.RESET });

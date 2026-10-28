@@ -142,7 +142,7 @@ test "transfer pair" {
 
 fn testDb() !sqlite.Db {
     const db = try sqlite.Db.open(":memory:");
-    try @import("migrations.zig").run(db);
+    try @import("migrations.zig").runTo(db, .{ .a = std.testing.allocator }, 8);
     try db.exec("INSERT INTO account (name) VALUES ('Broker')");
     try db.exec("INSERT INTO security (isin, name) VALUES ('US0378331005', ''), ('DE0007164600', 'SAP'), ('DE0007164600', 'SAP dup')");
     return db;

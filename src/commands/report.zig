@@ -6,7 +6,6 @@ const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
 const sqlite = @import("../sqlite.zig");
-const ledger_cmd = @import("ledger.zig");
 
 pub const Kind = enum { summary, balance, cashflow, holdings, performance };
 
@@ -62,7 +61,6 @@ const Ctx = struct {
 };
 
 pub fn run(app: *App, kind: Kind, filter: Filter) !void {
-    try ledger_cmd.sync(app);
     try roles(app);
     const c: Ctx = .{ .app = app, .filter = filter };
     switch (kind) {

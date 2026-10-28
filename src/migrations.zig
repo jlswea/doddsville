@@ -2,7 +2,17 @@
 //! Each step is idempotent, so fresh and already-migrated databases both work.
 
 const std = @import("std");
+const bookings = @import("bookings.zig");
+const Config = @import("Config.zig");
+const ledger_migration = @import("ledger_migration.zig");
 const sqlite = @import("sqlite.zig");
+
+pub const Upgrade = struct {
+    /// Scratch memory for converting the old rows.
+    a: std.mem.Allocator,
+    /// Account names for the converted rows.
+    ledger: Config.Ledger = .{},
+};
 
 fn version(db: sqlite.Db) !i64 {
     var st = try db.prepare("PRAGMA user_version");
@@ -193,32 +203,82 @@ fn m008(db: sqlite.Db) !void {
     );
 }
 
-const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004, m005, m006, m007, m008 };
+/// The old single-entry rows become the journal, rebuilt from them in full
+/// and checked against the old figures; then the old tables go.
+fn m009(db: sqlite.Db, up: Upgrade) !void {
+    if (!try hasColumn(db, "transaction", "id")) return;
+    var arena: std.heap.ArenaAllocator = .init(up.a);
+    defer arena.deinit();
+    try db.exec(
+        \\DELETE FROM txn_document;
+        \\DELETE FROM lot_close;
+        \\DELETE FROM lot;
+        \\DELETE FROM migrated_transaction;
+        \\DELETE FROM posting;
+        \\DELETE FROM txn;
+        \\DELETE FROM ledger_account;
+        \\DELETE FROM person;
+    );
+    const b: bookings.Book = .{ .db = db, .a = arena.allocator(), .ledger = up.ledger };
+    _ = try ledger_migration.migrate(b);
+    for (try ledger_migration.compare(b)) |c| if (!c.ok()) return error.ConversionMismatch;
+    try db.exec(
+        \\DROP TABLE transaction_document;
+        \\DROP TABLE "transaction";
+        \\DROP TABLE account;
+        \\DROP TABLE migrated_transaction;
+    );
+}
 
-pub fn run(db: sqlite.Db) !void {
+const Step = *const fn (sqlite.Db, Upgrade) anyerror!void;
+
+fn plain(comptime m: anytype) Step {
+    return struct {
+        fn step(db: sqlite.Db, _: Upgrade) anyerror!void {
+            return m(db);
+        }
+    }.step;
+}
+
+const steps = [_]Step{ plain(m001), plain(m002), plain(m003), plain(m004), plain(m005), plain(m006), plain(m007), plain(m008), m009 };
+
+pub fn run(db: sqlite.Db, up: Upgrade) !void {
+    return runTo(db, up, steps.len);
+}
+
+/// Up to schema version `last`, for tests of older schemas.
+pub fn runTo(db: sqlite.Db, up: Upgrade, last: usize) !void {
     const current = try version(db);
     var i: usize = @intCast(current);
-    while (i < steps.len) : (i += 1) {
+    while (i < last) : (i += 1) {
         try db.exec("BEGIN");
         errdefer db.exec("ROLLBACK") catch {};
-        try steps[i](db);
+        try steps[i](db, up);
         var buf: [64]u8 = undefined;
         try db.exec(try std.fmt.bufPrintSentinel(&buf, "PRAGMA user_version = {d}", .{i + 1}, 0));
         try db.exec("COMMIT");
     }
 }
 
+/// Old rows still waiting to become the journal; worth a copy of the file first.
+pub fn convertsOldRows(db: sqlite.Db) !bool {
+    if (try version(db) >= steps.len or !try hasColumn(db, "transaction", "id")) return false;
+    var st = try db.prepare("SELECT EXISTS (SELECT 1 FROM \"transaction\")");
+    defer st.finalize();
+    _ = try st.step();
+    return st.int(0) == 1;
+}
+
 test "fresh database migrates to the current schema" {
     const db = try sqlite.Db.open(":memory:");
     defer db.close();
-    try run(db);
-    try std.testing.expectEqual(@as(i64, 8), try version(db));
+    try run(db, .{ .a = std.testing.allocator });
+    try std.testing.expectEqual(@as(i64, 9), try version(db));
     try std.testing.expect(try hasColumn(db, "broker", "name"));
+    try std.testing.expect(!try hasColumn(db, "transaction", "id"));
     try std.testing.expect(try hasColumn(db, "posting", "fee"));
-    try std.testing.expect(try hasColumn(db, "transaction", "security"));
-    try std.testing.expect(try hasColumn(db, "transaction", "exchange_rate"));
     try std.testing.expect(try hasColumn(db, "security", "type"));
-    try run(db); // idempotent
+    try run(db, .{ .a = std.testing.allocator }); // idempotent
 }
 
 test "v5 scales existing quantities to millionths once" {
@@ -235,8 +295,8 @@ test "v5 scales existing quantities to millionths once" {
     try db.exec("INSERT INTO account (name) VALUES ('A')");
     try db.exec("INSERT INTO \"transaction\" (account, type, quantity, unit_value, total_value, date) VALUES (1, 'buy', 3, 100, 300, '2024-01-01')");
     try db.exec("INSERT INTO \"transaction\" (account, type, total_value, date) VALUES (1, 'deposit', 500, '2024-01-01')");
-    try run(db);
-    try run(db);
+    try runTo(db, .{ .a = std.testing.allocator }, 5);
+    try runTo(db, .{ .a = std.testing.allocator }, 5);
     var st = try db.prepare("SELECT quantity FROM \"transaction\" ORDER BY id");
     defer st.finalize();
     _ = try st.step();
@@ -248,7 +308,7 @@ test "v5 scales existing quantities to millionths once" {
 test "v6 constraints: asset accounts need an owner, a quantity needs a security" {
     const db = try sqlite.Db.open(":memory:");
     defer db.close();
-    try run(db);
+    try run(db, .{ .a = std.testing.allocator });
     try db.exec("PRAGMA foreign_keys = ON;");
     try db.exec("INSERT INTO person (name) VALUES ('Name')");
     try db.exec("INSERT INTO ledger_account (name, kind, owner) VALUES ('Assets:Cash', 'asset', 1)");
@@ -258,4 +318,28 @@ test "v6 constraints: asset accounts need an owner, a quantity needs a security"
     try db.exec("INSERT INTO txn (date) VALUES ('2024-01-01')");
     try std.testing.expectError(error.Constraint, db.exec("INSERT INTO posting (txn, account, amount, quantity) VALUES (1, 1, 100, 5)"));
     try std.testing.expectError(error.Constraint, db.exec("INSERT INTO posting (txn, account, amount) VALUES (1, 99, 100)"));
+}
+
+test "v9 turns the old rows into the journal and drops the old tables" {
+    const db = try sqlite.Db.open(":memory:");
+    defer db.close();
+    const up: Upgrade = .{ .a = std.testing.allocator, .ledger = .{ .owner = "Name" } };
+    try runTo(db, up, 8);
+    try db.exec(
+        \\INSERT INTO account (name) VALUES ('Scalable');
+        \\INSERT INTO security (isin, name, type) VALUES ('US0378331005', 'Example Inc.', 'stock');
+        \\INSERT INTO "transaction" (id, account, security, type, quantity, unit_value, total_value, cost, date) VALUES
+        \\  (3, 1, NULL, 'deposit', NULL, NULL, 500000, 0, '2024-01-01'),
+        \\  (7, 1, 1, 'buy', 10000000, 10000, 100000, 100, '2024-01-10');
+        \\INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (7, 158);
+    );
+    try std.testing.expect(try convertsOldRows(db));
+    try run(db, up);
+    try std.testing.expect(!try convertsOldRows(db));
+    try std.testing.expect(!try hasColumn(db, "account", "id"));
+    var st = try db.prepare("SELECT group_concat(id, ','), (SELECT txn FROM txn_document) FROM (SELECT id FROM txn ORDER BY id)");
+    defer st.finalize();
+    _ = try st.step();
+    try std.testing.expectEqualStrings("3,7", st.textRef(0).?);
+    try std.testing.expectEqual(@as(i64, 7), st.int(1));
 }
