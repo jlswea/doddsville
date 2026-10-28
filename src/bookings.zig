@@ -294,6 +294,63 @@ pub fn dividend(b: Book, broker: []const u8, d: Dividend) Error!i64 {
     return journal.insert(b.db, .{ .id = b.id, .date = d.date, .description = "dividend", .postings = postings.items });
 }
 
+/// A booking as the parsers and the old single-entry rows describe it.
+pub const Entry = struct {
+    kind: Kind,
+    date: []const u8,
+    security: ?i64 = null,
+    /// Millionths of a share, for trades.
+    quantity: i64 = 0,
+    /// Gross amount in `currency` cents (Kurswert, booking amount), positive.
+    total: i64,
+    /// EUR cents: trade fees, tax withheld on a dividend, otherwise a fee
+    /// charged alongside.
+    cost: i64 = 0,
+    currency: []const u8 = "EUR",
+    exchange_rate: f64 = 1.0,
+
+    pub const Kind = enum { buy, sell, dividend, interest, deposit, withdrawal };
+
+    /// A cost on a cash booking becomes a transaction of its own.
+    pub fn separateFee(e: Entry) bool {
+        return e.cost != 0 and switch (e.kind) {
+            .interest, .deposit, .withdrawal => true,
+            else => false,
+        };
+    }
+
+    pub fn eur(e: Entry) i64 {
+        return @intFromFloat(@round(@as(f64, @floatFromInt(e.total)) * e.exchange_rate));
+    }
+};
+
+/// Books `e`; a separate fee takes `fee_id` (or the next free id).
+pub fn entry(b: Book, broker: []const u8, e: Entry, fee_id: ?i64) Error!i64 {
+    const total = e.eur();
+    const trade: Trade = .{ .date = e.date, .security = e.security orelse 0, .quantity = e.quantity, .total = total, .fees = e.cost };
+    const id = switch (e.kind) {
+        .buy => return buy(b, broker, trade),
+        .sell => return sell(b, broker, trade),
+        .dividend => return dividend(b, broker, .{
+            .date = e.date,
+            .security = e.security orelse return error.UnknownSecurity,
+            .gross = total,
+            .taxes = .{ .kapest = e.cost },
+            .currency = e.currency,
+            .original = if (std.mem.eql(u8, e.currency, "EUR")) null else e.total,
+        }),
+        .interest => try interest(b, broker, e.date, total),
+        .deposit => try deposit(b, broker, e.date, total),
+        .withdrawal => try withdrawal(b, broker, e.date, total),
+    };
+    if (e.separateFee()) {
+        var fb = b;
+        fb.id = fee_id;
+        _ = try fee(fb, broker, e.date, e.cost);
+    }
+    return id;
+}
+
 /// Shares held in a broker's depot, in millionths.
 pub fn held(b: Book, broker: []const u8, security: i64) Error!i64 {
     const acc = try b.broker(broker);
