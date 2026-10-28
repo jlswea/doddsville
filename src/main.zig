@@ -98,7 +98,7 @@ const top_help =
     \\  import    Import transactions from a broker PDF
     \\  ledger    Double-entry journal (export)
     \\
-    \\  sensor: not ported yet; use the Python CLI (pixi run python cli.py ...)
+    \\  sensor: Python; run with pixi run sensor list|run ...
     \\
     \\options:
     \\  -h, --help     show this help message and exit
@@ -243,7 +243,7 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
     if (eql(command, "config")) return configCommand(app, rest);
 
     if (eql(command, "sensor")) {
-        try app.print("{s}'dv {s}' is not ported to Zig yet.{s} Use the Python CLI for now:\n  pixi run python cli.py {s} ...\n", .{ f.YELLOW, command, f.RESET, command });
+        try app.print("{s}The sensors are Python.{s} Run them with:\n  pixi run sensor list|run ...\n", .{ f.YELLOW, f.RESET });
         return 1;
     }
 
