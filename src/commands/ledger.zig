@@ -19,7 +19,7 @@ pub fn migrate(app: *App, dry_run: bool) !void {
     const checks = try ledger_migration.compare(b);
 
     try app.print("{s}Ledger migration{s}{s}\n", .{ f.BOLD, if (dry_run) " (dry run, nothing written)" else "", f.RESET });
-    try app.print("  {d} transaction(s) migrated, {d} already, {d} document link(s)\n", .{ sum.migrated, sum.already, sum.documents });
+    try app.print("  {d} transaction(s) built from the old rows ({d} transfer pair(s)), {d} document link(s)\n", .{ sum.migrated, sum.paired, sum.documents });
     if (sum.dividend_costs_as_kapest > 0)
         try app.print("  {s}{d} dividend cost(s) booked as KapESt; the old rows do not say which tax it was.{s}\n", .{ f.YELLOW, sum.dividend_costs_as_kapest, f.RESET });
 
