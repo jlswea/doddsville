@@ -7,11 +7,11 @@ const Allocator = std.mem.Allocator;
 
 const bookings = @import("bookings.zig");
 const f = @import("format.zig");
-const ledger = @import("ledger.zig");
 const ollama = @import("ollama.zig");
 const paperless = @import("paperless.zig");
 const parsers = @import("parsers/parsers.zig");
 const pdf = @import("pdf/pdf.zig");
+const securities = @import("securities.zig");
 const sqlite = @import("sqlite.zig");
 
 pub const max_pdf_size = 1024 * 1024;
@@ -167,7 +167,7 @@ pub fn check(b: bookings.Book, rs: []Row, broker: []const u8) !void {
     const names = try b.ledger.broker(b.a, broker);
     for (rs) |*r| {
         if (r.needsSecurity()) if (r.isin) |isin| {
-            r.security_id = try ledger.securityByIsin(b.db, isin);
+            r.security_id = try securities.byIsin(b.db, isin);
         };
         r.duplicate_of = null;
         r.held = null;
@@ -217,7 +217,7 @@ fn held(db: sqlite.Db, depot: []const u8, security: i64, except: ?i64) !i64 {
 /// Only for rows whose document gives both an ISIN and a name.
 pub fn createSecurity(db: sqlite.Db, r: *Row) !void {
     std.debug.assert(r.needsSecurity() and r.isin != null and r.security.len > 0);
-    r.security_id = try ledger.addSecurity(db, r.isin.?, r.security);
+    r.security_id = try securities.add(db, r.isin.?, r.security);
 }
 
 pub const Edit = struct {
@@ -256,7 +256,7 @@ pub fn applyEdit(r: *Row, shown_label: []const u8, e: Edit) void {
 /// The database name; many securities were seeded with an ISIN only, so the
 /// document's name and then the ISIN stand in.
 pub fn label(db: sqlite.Db, a: Allocator, r: Row) ![]const u8 {
-    if (r.security_id) |id| if (try ledger.security(db, a, id)) |sec| {
+    if (r.security_id) |id| if (try securities.get(db, a, id)) |sec| {
         if (sec.name.len > 0) return sec.name;
         if (r.security.len > 0) return r.security;
         if (sec.isin.len > 0) return sec.isin;
@@ -279,7 +279,7 @@ pub fn commit(b: bookings.Book, rs: []const Row, broker: []const u8) ![]const i6
     for (rs) |r| {
         if (r.duplicate_of != null) continue;
         try ids.append(b.a, try bookings.entry(b, broker, r.entry(), null));
-        if (r.security_id) |sid| if (r.security.len > 0) try ledger.fillSecurityName(b.db, sid, r.security);
+        if (r.security_id) |sid| if (r.security.len > 0) try securities.fillName(b.db, sid, r.security);
     }
     try b.db.exec("COMMIT");
     return ids.items;
@@ -378,7 +378,7 @@ test "rows derive unit prices; check resolves by ISIN and leaves unknown ones" {
     const ids = try commit(b, rs.items, "Broker");
     try testing.expectEqual(@as(usize, 3), ids.len);
     // The seeded security got the document's name.
-    try testing.expectEqualStrings("Example Inc.", (try ledger.security(db, a, 1)).?.name);
+    try testing.expectEqualStrings("Example Inc.", (try securities.get(db, a, 1)).?.name);
 
     // The same document again: everything is a duplicate.
     const again = try rows(a, try sample(a));
