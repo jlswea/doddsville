@@ -51,11 +51,18 @@ pub fn write(db: sqlite.Db, a: Allocator, roots: journal.Roots, w: *std.Io.Write
     defer txns.finalize();
     while (try txns.step()) {
         try w.print("\n{s} * {f}\n  id: {d}\n", .{ txns.textRef(1).?, quoted(txns.textRef(2).?), txns.int(0) });
+        // A buy's fee posting belongs to the lot's cost in beancount.
         var postings = try db.prepare(
-            \\SELECT a.name, p.amount, p.quantity, p.security, s.isin FROM posting p
+            \\SELECT a.name, p.amount + COALESCE((
+            \\         SELECT SUM(f.amount) FROM posting f WHERE f.txn = p.txn AND f.fee
+            \\           AND f.account = p.account AND f.security = p.security AND p.quantity > 0), 0),
+            \\       p.quantity, p.security, s.isin FROM posting p
             \\JOIN ledger_account a ON a.id = p.account
             \\LEFT JOIN security s ON s.id = p.security
-            \\WHERE p.txn = ? ORDER BY p.id
+            \\WHERE p.txn = ? AND NOT (p.fee AND p.quantity IS NULL AND EXISTS (
+            \\         SELECT 1 FROM posting q WHERE q.txn = p.txn AND q.account = p.account
+            \\           AND q.security = p.security AND q.quantity > 0))
+            \\ORDER BY p.id
         );
         defer postings.finalize();
         try postings.bindAll(.{txns.int(0)});
@@ -175,7 +182,8 @@ test "journal as beancount" {
         \\  Expenses:Tax:KapESt  33.37 EUR
         \\  Expenses:Tax:Soli  1.83 EUR
         \\  Assets:Scalable:Depot  -4.50 US0378331005 {}
-        \\  Income:Gains:Shares  -133.55 EUR
+        \\  Income:Gains:Shares  -134.55 EUR
+        \\  Income:Gains:Shares  1.00 EUR
         \\
         \\2026-07-15 * "dividend"
         \\  id: 4

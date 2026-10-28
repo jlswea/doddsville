@@ -164,7 +164,8 @@ pub const Trade = struct {
     taxes: Taxes = .{},
 };
 
-/// Depot + (Kurswert + fees), cash − the same, and a lot at that cost.
+/// Depot + Kurswert and + fees (a separate posting, so the fee stays visible),
+/// cash − both, and a lot at their sum.
 pub fn buy(b: Book, broker: []const u8, t: Trade) Error!i64 {
     return atomic(b, buyInner, .{ b, broker, t });
 }
@@ -175,10 +176,11 @@ fn buyInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
     if (t.fees < 0) return error.NotPositive;
     const acc = try b.broker(broker);
     const cost = std.math.add(i64, t.total, t.fees) catch return error.Unbalanced;
-    const id = try journal.insert(b.db, .{ .id = b.id, .date = t.date, .description = "buy", .postings = &.{
-        .{ .account = acc.depot, .amount = cost, .security = t.security, .quantity = t.quantity },
-        .{ .account = acc.cash, .amount = -cost },
-    } });
+    var postings: std.ArrayList(journal.Posting) = .empty;
+    try postings.append(b.a, .{ .account = acc.depot, .amount = t.total, .security = t.security, .quantity = t.quantity });
+    if (t.fees > 0) try postings.append(b.a, .{ .account = acc.depot, .amount = t.fees, .security = t.security, .fee = true });
+    try postings.append(b.a, .{ .account = acc.cash, .amount = -cost });
+    const id = try journal.insert(b.db, .{ .id = b.id, .date = t.date, .description = "buy", .postings = postings.items });
     try b.db.run("INSERT INTO lot (account, security, txn, opened, quantity, cost) VALUES (?, ?, ?, ?, ?, ?)", .{ acc.depot, t.security, id, t.date, t.quantity, cost });
     return id;
 }
@@ -249,7 +251,9 @@ fn sellInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
     try postings.append(b.a, .{ .account = acc.cash, .amount = net - t.taxes.total() });
     try appendTaxes(b, &postings, t.taxes, 1);
     try postings.append(b.a, .{ .account = acc.depot, .amount = -basis, .security = t.security, .quantity = -t.quantity });
-    if (gain != 0) try postings.append(b.a, .{ .account = try b.role(gains_account), .amount = -gain });
+    const gains = try b.role(gains_account);
+    if (gain + t.fees != 0) try postings.append(b.a, .{ .account = gains, .amount = -(gain + t.fees) });
+    if (t.fees > 0) try postings.append(b.a, .{ .account = gains, .amount = t.fees, .fee = true });
     const id = try journal.insert(b.db, .{ .id = b.id, .date = t.date, .description = "sell", .postings = postings.items });
 
     var proceeds_left = net;
@@ -392,6 +396,13 @@ test "buy capitalises fees; sell closes lots FIFO and books the gain" {
     try testing.expectEqual(@as(i64, 0), try balance(b, "Assets:Scalable:Depot"));
     try testing.expectEqual(@as(i64, -(194900 - 160150) + (60050 - 50000)), try balance(b, "Income:Gains:Shares"));
     try testing.expectEqual(@as(i64, 0), try held(b, "Scalable", acme));
+
+    // Fees stay visible as their own postings: two buys and the first sell.
+    var fees = try b.db.prepare("SELECT COUNT(*), SUM(amount) FROM posting WHERE fee");
+    defer fees.finalize();
+    _ = try fees.step();
+    try testing.expectEqual(@as(i64, 3), fees.int(0));
+    try testing.expectEqual(@as(i64, 300), fees.int(1));
 
     try testing.expectError(error.InsufficientHolding, sell(b, "Scalable", .{ .date = "2024-05-01", .security = acme, .quantity = 1, .total = 1 }));
     // The failed sell left nothing behind.
