@@ -92,6 +92,8 @@ pub const Posting = struct {
 };
 
 pub const Txn = struct {
+    /// Chosen by the database when null.
+    id: ?i64 = null,
     /// ISO date.
     date: []const u8,
     description: []const u8 = "",
@@ -121,7 +123,7 @@ pub fn validate(db: sqlite.Db, t: Txn) Error!void {
 /// Within the caller's database transaction; returns the new txn id.
 pub fn insert(db: sqlite.Db, t: Txn) Error!i64 {
     try validate(db, t);
-    try db.run("INSERT INTO txn (date, description) VALUES (?, ?)", .{ t.date, t.description });
+    try db.run("INSERT INTO txn (id, date, description) VALUES (?, ?, ?)", .{ t.id, t.date, t.description });
     const id = db.lastInsertRowId();
     for (t.postings) |p| try db.run(
         \\INSERT INTO posting (txn, account, amount, currency, original, security, quantity)
