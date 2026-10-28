@@ -174,7 +174,14 @@ fn m006(db: sqlite.Db) !void {
     );
 }
 
-const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004, m005, m006 };
+/// Marks the postings that are fees, so a trade's fee stays visible although it
+/// is part of the lot's cost or reduces the gain.
+fn m007(db: sqlite.Db) !void {
+    if (try hasColumn(db, "posting", "fee")) return;
+    try db.exec("ALTER TABLE posting ADD COLUMN fee INTEGER NOT NULL DEFAULT 0 CHECK (fee IN (0, 1))");
+}
+
+const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004, m005, m006, m007 };
 
 pub fn run(db: sqlite.Db) !void {
     const current = try version(db);
@@ -193,7 +200,8 @@ test "fresh database migrates to the current schema" {
     const db = try sqlite.Db.open(":memory:");
     defer db.close();
     try run(db);
-    try std.testing.expectEqual(@as(i64, 6), try version(db));
+    try std.testing.expectEqual(@as(i64, 7), try version(db));
+    try std.testing.expect(try hasColumn(db, "posting", "fee"));
     try std.testing.expect(try hasColumn(db, "transaction", "security"));
     try std.testing.expect(try hasColumn(db, "transaction", "exchange_rate"));
     try std.testing.expect(try hasColumn(db, "security", "type"));
