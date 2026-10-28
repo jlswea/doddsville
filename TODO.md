@@ -4,18 +4,13 @@ Prioritised with MoSCoW.
 
 ## Must
 
-- CLI tests for the Zig binary: port the scenarios from `test_cli.py` that matter
-  (account, add, list, edit, report, doc, import) so they run against `dv` itself.
-  Prerequisite for deleting the Python code.
-- Model bookings that are not buy/sell/dividend/interest/deposit/withdrawal/transfer:
-  tax refunds and withheld taxes (Kapitalertragsteuer, Solidaritätszuschlag,
-  Kirchensteuer, Quellensteuer), Vorabpauschale, fees on their own, and anything
-  that needs to be deferred to another period. `dv import` currently lists these
-  as "not importable". Decide the ledger model first (see below).
-- Ledger model for a balance sheet and tax reporting: likely double-entry (asset,
-  liability, equity, income and expense accounts with balanced postings) instead
-  of typed single-entry rows. Covers deferrals/accruals if needed and the figures
-  for Anlage KAP (gains and losses per Verlusttopf, withheld and creditable taxes).
+- CLI tests for the Zig binary: scenarios for broker, add, list, edit (with replay),
+  report, doc and import that run against `dv` itself. The Python tests are gone.
+- Bookings beyond the shortcuts: `dv add txn` with free postings, tax refunds and
+  withheld taxes from Kontoauszüge in the parsers, the Vorabpauschale, and deferrals
+  to another period. The journal already holds them.
+- Balance sheet, income statement and the yearly tax helper (Anlage KAP: gains and
+  losses per Verlusttopf, withheld and creditable taxes).
 
 ## Should
 
@@ -27,8 +22,7 @@ Prioritised with MoSCoW.
 - Look up securities on demand instead of pre-filling the table: `dv security
   lookup <ISIN>` via OpenFIGI, or offline from the Xetra "All tradable
   instruments" CSV; `dv security refresh` fills the many blank names.
-- Delete the Python code once the Zig CLI tests exist: CLI, TUI, sensors,
-  `demo.py`, `schema.sql`, pixi/pyproject, the README section; drop the v5 guard.
+- Replace the Python sensors with the on-demand lookup above, then drop pixi.
 
 ## Could
 
@@ -41,5 +35,4 @@ Prioritised with MoSCoW.
 ## Won't
 
 - Fundamentals (revenue, cash flow) scraped from tagesschau company pages.
-  Investing passively now; revisit if that changes.
 - Porting the index/justETF sensors: on-demand lookup replaces them.
