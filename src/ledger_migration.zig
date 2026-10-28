@@ -106,41 +106,31 @@ fn mapped(b: bookings.Book, old: i64) !?i64 {
 }
 
 fn book(b: bookings.Book, rows: []const Old, r: Old, sum: *Summary, extra: *i64) !i64 {
-    const eq = std.mem.eql;
-    const total = eur(r.total, r.rate);
-    if (eq(u8, r.kind, "buy") or eq(u8, r.kind, "sell")) {
-        const t: bookings.Trade = .{ .date = r.date, .security = r.security.?, .quantity = r.quantity.?, .total = total, .fees = r.cost };
-        return if (eq(u8, r.kind, "buy")) bookings.buy(b, r.account, t) else bookings.sell(b, r.account, t);
+    if (std.mem.eql(u8, r.kind, "transfer")) {
+        const id = try transfer(b, rows, r, eur(r.total, r.rate));
+        // Costs on a transfer were fees charged alongside.
+        if (r.cost != 0) {
+            var fb = b;
+            fb.id = extra.*;
+            extra.* += 1;
+            _ = try bookings.fee(fb, r.account, r.date, r.cost);
+        }
+        return id;
     }
-    if (eq(u8, r.kind, "dividend")) {
-        if (r.cost != 0) sum.dividend_costs_as_kapest += 1;
-        return bookings.dividend(b, r.account, .{
-            .date = r.date,
-            .security = r.security.?,
-            .gross = total,
-            .taxes = .{ .kapest = r.cost },
-            .currency = r.currency,
-            .original = if (eq(u8, r.currency, "EUR")) null else r.total,
-        });
-    }
-    const id = if (eq(u8, r.kind, "deposit"))
-        try bookings.deposit(b, r.account, r.date, total)
-    else if (eq(u8, r.kind, "withdrawal"))
-        try bookings.withdrawal(b, r.account, r.date, total)
-    else if (eq(u8, r.kind, "interest"))
-        try bookings.interest(b, r.account, r.date, total)
-    else if (eq(u8, r.kind, "transfer"))
-        try transfer(b, rows, r, total)
-    else
-        return error.UnknownType;
-    // Costs on these rows were fees charged alongside.
-    if (r.cost != 0) {
-        var fb = b;
-        fb.id = extra.*;
-        extra.* += 1;
-        _ = try bookings.fee(fb, r.account, r.date, r.cost);
-    }
-    return id;
+    const e: bookings.Entry = .{
+        .kind = std.meta.stringToEnum(bookings.Entry.Kind, r.kind) orelse return error.UnknownType,
+        .date = r.date,
+        .security = r.security,
+        .quantity = r.quantity orelse 0,
+        .total = r.total,
+        .cost = r.cost,
+        .currency = r.currency,
+        .exchange_rate = r.rate,
+    };
+    if (e.kind == .dividend and r.cost != 0) sum.dividend_costs_as_kapest += 1;
+    const fee_id = extra.*;
+    if (e.separateFee()) extra.* += 1;
+    return bookings.entry(b, r.account, e, fee_id);
 }
 
 /// Old transfers are two linked rows; the negative one is the source.
