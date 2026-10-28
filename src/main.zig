@@ -94,7 +94,7 @@ const top_help =
     \\  doc       Manage documents linked to transactions (add, edit)
     \\  config    Manage CLI configuration (show, check)
     \\  import    Import transactions from a broker PDF
-    \\  ledger    Double-entry journal (migrate)
+    \\  ledger    Double-entry journal (migrate, export)
     \\
     \\  sensor: not ported yet; use the Python CLI (pixi run python cli.py ...)
     \\
@@ -281,6 +281,7 @@ const Action = union(enum) {
     import_raw: []const u8,
     import_pdf: import_cmd.Options,
     ledger_migrate: bool,
+    ledger_export,
 };
 
 fn subcommand(app: *App, prog: []const u8, rest: []const []const u8, comptime choices: []const []const u8) ![]const u8 {
@@ -400,7 +401,11 @@ fn parseCommand(app: *App, command: []const u8, rest: []const []const u8) !Actio
     }
 
     if (eql(command, "ledger")) {
-        _ = try subcommand(app, "dv ledger", rest, &.{"migrate"});
+        const sub = try subcommand(app, "dv ledger", rest, &.{ "migrate", "export" });
+        if (eql(sub, "export")) {
+            _ = try parse(app, .{ .prog = "dv ledger export", .help = "Print the journal as beancount text, e.g. for bean-check." }, rest[1..]);
+            return .ledger_export;
+        }
         const p = try parse(app, .{
             .prog = "dv ledger migrate",
             .help = "Move the transactions into the double-entry journal and compare old and new figures.",
@@ -464,6 +469,7 @@ fn execute(app: *App, action: Action) !void {
         .import_raw => unreachable,
         .import_pdf => |o| try import_cmd.run(app, o),
         .ledger_migrate => |dry| try ledger_cmd.migrate(app, dry),
+        .ledger_export => try ledger_cmd.exportBeancount(app),
     }
 }
 
