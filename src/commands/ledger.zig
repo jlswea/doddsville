@@ -3,6 +3,7 @@
 const std = @import("std");
 const App = @import("../App.zig");
 const bookings = @import("../bookings.zig");
+const beancount = @import("../beancount.zig");
 const f = @import("../format.zig");
 const ledger_migration = @import("../ledger_migration.zig");
 
@@ -48,4 +49,8 @@ pub fn migrate(app: *App, dry_run: bool) !void {
     try app.db.exec("COMMIT");
     done = true;
     try app.print("\n{s}Journal written.{s}\n", .{ f.GREEN, f.RESET });
+}
+
+pub fn exportBeancount(app: *App) !void {
+    try beancount.write(app.db, app.a, app.config.ledger.roots, app.out);
 }
