@@ -8,6 +8,9 @@ const journal = @import("journal.zig");
 
 pub fn write(db: sqlite.Db, a: Allocator, roots: journal.Roots, w: *std.Io.Writer) !void {
     try w.writeAll("option \"operating_currency\" \"EUR\"\noption \"booking_method\" \"FIFO\"\n");
+    // dv floors the cost of a partly sold lot to the cent; beancount keeps the
+    // exact fraction, so a sale may differ by just under a cent.
+    try w.writeAll("option \"tolerance_multiplier\" \"1\"\n");
     inline for (.{ "assets", "liabilities", "equity", "income", "expenses" }) |r|
         try w.print("option \"name_{s}\" \"{s}\"\n", .{ r, @field(roots, r) });
 
@@ -135,6 +138,7 @@ test "journal as beancount" {
     try testing.expectEqualStrings(
         \\option "operating_currency" "EUR"
         \\option "booking_method" "FIFO"
+        \\option "tolerance_multiplier" "1"
         \\option "name_assets" "Assets"
         \\option "name_liabilities" "Liabilities"
         \\option "name_equity" "Equity"
