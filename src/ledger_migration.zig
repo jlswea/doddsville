@@ -1,6 +1,5 @@
-//! Moves the single-entry `transaction` rows into the double-entry journal
-//! as balanced transactions. Rows already in the journal are skipped, so it
-//! can run again while commands still write old rows.
+//! Moves the single-entry `transaction` rows of databases older than schema
+//! v9 into the double-entry journal as balanced transactions (see m009).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
