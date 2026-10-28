@@ -518,7 +518,7 @@ test {
     _ = @import("args.zig");
     _ = @import("migrations.zig");
     _ = @import("lookup.zig");
-    _ = @import("ledger.zig");
+    _ = @import("securities.zig");
     _ = @import("Config.zig");
     _ = @import("pdf/syntax.zig");
     _ = @import("pdf/ascii85.zig");
