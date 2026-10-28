@@ -12,6 +12,7 @@ const paperless = @import("paperless.zig");
 const sqlite = @import("sqlite.zig");
 
 const account_cmd = @import("commands/account.zig");
+const broker_cmd = @import("commands/broker.zig");
 const add_cmd = @import("commands/add.zig");
 const config_cmd = @import("commands/config.zig");
 const doc_cmd = @import("commands/doc.zig");
@@ -81,12 +82,13 @@ fn addSpec(kind: add_cmd.Kind) args.Spec {
 }
 
 const top_help =
-    \\usage: dv [-h] [-v] [--db DB] {account,list,add,edit,report,doc,config} ...
+    \\usage: dv [-h] [-v] [--db DB] {broker,account,list,add,edit,report,doc,config,import,ledger} ...
     \\
     \\dv: Managing common stocks transactions
     \\
     \\commands:
-    \\  account   Manage accounts (add, list)
+    \\  broker    Manage brokers, the names -a refers to (add, list)
+    \\  account   Manage ledger accounts (add, list)
     \\  list      List all recorded transactions
     \\  add       Add a new transaction (buy, sell, dividend, interest, deposit, withdrawal, transfer)
     \\  edit      Edit an existing transaction
@@ -245,12 +247,12 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
         return 1;
     }
 
-    const known = [_][]const u8{ "account", "list", "add", "edit", "report", "doc", "import", "ledger" };
+    const known = [_][]const u8{ "broker", "account", "list", "add", "edit", "report", "doc", "import", "ledger" };
     var is_known = false;
     for (known) |k| if (eql(k, command)) {
         is_known = true;
     };
-    if (!is_known) return usage(app, "dv", "argument command: invalid choice: '{s}' (choose from account, list, add, edit, report, doc, config, import, ledger, sensor)", .{command});
+    if (!is_known) return usage(app, "dv", "argument command: invalid choice: '{s}' (choose from broker, account, list, add, edit, report, doc, config, import, ledger, sensor)", .{command});
 
     // Parse/validate arguments before touching the database (argparse order).
     const action = try parseCommand(app, command, rest);
@@ -270,6 +272,8 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
 }
 
 const Action = union(enum) {
+    broker_add: []const u8,
+    broker_list,
     account_add: []const u8,
     account_list,
     list: struct { account: ?[]const u8, type: ?[]const u8 },
@@ -320,13 +324,23 @@ fn dateArg(app: *App, prog: []const u8, name: []const u8, v: ?[]const u8) !?f.Da
 }
 
 fn parseCommand(app: *App, command: []const u8, rest: []const []const u8) !Action {
+    if (eql(command, "broker")) {
+        const sub = try subcommand(app, "dv broker", rest, &.{ "add", "list" });
+        if (eql(sub, "add")) {
+            const p = try parse(app, .{ .prog = "dv broker add", .help = "Add a broker", .positionals = &.{.{ .name = "name", .help = "Broker name" }} }, rest[1..]);
+            return .{ .broker_add = p.pos[0] };
+        }
+        _ = try parse(app, .{ .prog = "dv broker list", .help = "List brokers and their accounts" }, rest[1..]);
+        return .broker_list;
+    }
+
     if (eql(command, "account")) {
         const sub = try subcommand(app, "dv account", rest, &.{ "add", "list" });
         if (eql(sub, "add")) {
-            const p = try parse(app, .{ .prog = "dv account add", .help = "Add a new account", .positionals = &.{.{ .name = "name", .help = "Account name" }} }, rest[1..]);
+            const p = try parse(app, .{ .prog = "dv account add", .help = "Add a ledger account, e.g. Expenses:Depotgebuehren", .positionals = &.{.{ .name = "name", .help = "Full account name" }} }, rest[1..]);
             return .{ .account_add = p.pos[0] };
         }
-        _ = try parse(app, .{ .prog = "dv account list", .help = "List all accounts" }, rest[1..]);
+        _ = try parse(app, .{ .prog = "dv account list", .help = "List ledger accounts" }, rest[1..]);
         return .account_list;
     }
 
@@ -450,6 +464,8 @@ fn today(app: *App) ![]const u8 {
 
 fn execute(app: *App, action: Action) !void {
     switch (action) {
+        .broker_add => |name| try broker_cmd.add(app, name),
+        .broker_list => try broker_cmd.list(app),
         .account_add => |name| try account_cmd.add(app, name),
         .account_list => try account_cmd.list(app),
         .list => |l| try list_cmd.run(app, l.account, l.type),

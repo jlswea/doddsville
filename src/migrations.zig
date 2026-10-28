@@ -181,7 +181,19 @@ fn m007(db: sqlite.Db) !void {
     try db.exec("ALTER TABLE posting ADD COLUMN fee INTEGER NOT NULL DEFAULT 0 CHECK (fee IN (0, 1))");
 }
 
-const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004, m005, m006, m007 };
+/// Brokers are names that map to a cash and a depot account; the old
+/// single-entry accounts were exactly that.
+fn m008(db: sqlite.Db) !void {
+    try db.exec(
+        \\CREATE TABLE IF NOT EXISTS broker (
+        \\    id INTEGER PRIMARY KEY,
+        \\    name TEXT NOT NULL UNIQUE
+        \\);
+        \\INSERT OR IGNORE INTO broker (id, name) SELECT id, name FROM account;
+    );
+}
+
+const steps = [_]*const fn (sqlite.Db) anyerror!void{ m001, m002, m003, m004, m005, m006, m007, m008 };
 
 pub fn run(db: sqlite.Db) !void {
     const current = try version(db);
@@ -200,7 +212,8 @@ test "fresh database migrates to the current schema" {
     const db = try sqlite.Db.open(":memory:");
     defer db.close();
     try run(db);
-    try std.testing.expectEqual(@as(i64, 7), try version(db));
+    try std.testing.expectEqual(@as(i64, 8), try version(db));
+    try std.testing.expect(try hasColumn(db, "broker", "name"));
     try std.testing.expect(try hasColumn(db, "posting", "fee"));
     try std.testing.expect(try hasColumn(db, "transaction", "security"));
     try std.testing.expect(try hasColumn(db, "transaction", "exchange_rate"));
