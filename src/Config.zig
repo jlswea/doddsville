@@ -65,6 +65,30 @@ pub const Ledger = struct {
         };
     }
 
+    /// The broker whose cash or depot account `account` is: a configured one,
+    /// or `<name>` from a default `Assets:<name>:Cash`/`Depot`.
+    pub fn brokerOf(l: Ledger, account: []const u8) ?[]const u8 {
+        for (l.brokers) |b| {
+            const cash_hit = if (b.cash) |c| std.mem.eql(u8, c, account) else isDefault(l, account, b.name, "Cash");
+            const depot_hit = if (b.depot) |d| std.mem.eql(u8, d, account) else isDefault(l, account, b.name, "Depot");
+            if (cash_hit or depot_hit) return b.name;
+        }
+        const rest = std.mem.cutPrefix(u8, account, l.roots.assets) orelse return null;
+        const inner = std.mem.cutPrefix(u8, rest, ":") orelse return null;
+        const colon = std.mem.indexOfScalar(u8, inner, ':') orelse return null;
+        const suffix = inner[colon + 1 ..];
+        if (!std.mem.eql(u8, suffix, "Cash") and !std.mem.eql(u8, suffix, "Depot")) return null;
+        return inner[0..colon];
+    }
+
+    fn isDefault(l: Ledger, account: []const u8, name: []const u8, suffix: []const u8) bool {
+        const rest = std.mem.cutPrefix(u8, account, l.roots.assets) orelse return false;
+        const a1 = std.mem.cutPrefix(u8, rest, ":") orelse return false;
+        const a2 = std.mem.cutPrefix(u8, a1, name) orelse return false;
+        const a3 = std.mem.cutPrefix(u8, a2, ":") orelse return false;
+        return std.mem.eql(u8, a3, suffix);
+    }
+
     /// Configured names that do not sit under the root their role needs.
     pub fn misplaced(l: Ledger, a: Allocator) Allocator.Error![]const []const u8 {
         var out: std.ArrayList([]const u8) = .empty;
@@ -194,6 +218,15 @@ test "config.zon" {
     });
     try std.testing.expectEqualStrings("llama3.2", custom.ollama.model);
     try std.testing.expectEqualStrings("http://localhost:11434", custom.ollama.url);
+}
+
+test "broker of an account" {
+    const l: Ledger = .{ .brokers = &.{.{ .name = "Bank", .cash = "Assets:Girokonto" }} };
+    try std.testing.expectEqualStrings("Bank", l.brokerOf("Assets:Girokonto").?);
+    try std.testing.expectEqualStrings("Bank", l.brokerOf("Assets:Bank:Depot").?);
+    try std.testing.expectEqualStrings("Scalable", l.brokerOf("Assets:Scalable:Cash").?);
+    try std.testing.expect(l.brokerOf("Income:Dividends") == null);
+    try std.testing.expect(l.brokerOf("Assets:Prepaid:Fees") == null);
 }
 
 test "ledger accounts: defaults, brokers and misplaced names" {
