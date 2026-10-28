@@ -51,6 +51,17 @@ pub fn migrate(app: *App, dry_run: bool) !void {
     try app.print("\n{s}Journal written.{s}\n", .{ f.GREEN, f.RESET });
 }
 
+/// Until the commands write the journal, readers rebuild it from the old rows
+/// first so it never lags behind an add, edit or import.
+pub fn rebuild(app: *App) !void {
+    const b: bookings.Book = .{ .db = app.db, .a = app.a, .ledger = app.config.ledger };
+    try app.db.exec("BEGIN");
+    errdefer app.db.exec("ROLLBACK") catch {};
+    _ = try ledger_migration.migrate(b);
+    try app.db.exec("COMMIT");
+}
+
 pub fn exportBeancount(app: *App) !void {
+    try rebuild(app);
     try beancount.write(app.db, app.a, app.config.ledger.roots, app.out);
 }
