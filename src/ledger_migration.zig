@@ -1,7 +1,6 @@
 //! Moves the single-entry `transaction` rows into the double-entry journal
-//! as balanced transactions. Until the commands write the journal themselves,
-//! it is derived from the old rows and rebuilt in full on every run, so edited
-//! and deleted rows arrive too.
+//! as balanced transactions. Rows already in the journal are skipped, so it
+//! can run again while commands still write old rows.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -11,8 +10,8 @@ const sqlite = @import("sqlite.zig");
 
 pub const Summary = struct {
     migrated: usize = 0,
-    /// Transfer rows booked together with their partner row.
-    paired: usize = 0,
+    /// Already in the journal, including transfer rows booked with their partner.
+    known: usize = 0,
     documents: usize = 0,
     /// Dividends whose old `cost` was booked as KapESt: the old model does not
     /// say which tax it was.
@@ -39,16 +38,6 @@ fn eur(cents: i64, rate: f64) i64 {
 
 /// Within the caller's database transaction.
 pub fn migrate(b: bookings.Book) !Summary {
-    try b.db.exec(
-        \\DELETE FROM txn_document;
-        \\DELETE FROM lot_close;
-        \\DELETE FROM lot;
-        \\DELETE FROM migrated_transaction;
-        \\DELETE FROM posting;
-        \\DELETE FROM txn;
-        \\DELETE FROM ledger_account;
-        \\DELETE FROM person;
-    );
     var rows: std.ArrayList(Old) = .empty;
     {
         var st = try b.db.prepare(
@@ -76,11 +65,11 @@ pub fn migrate(b: bookings.Book) !Summary {
 
     var sum: Summary = .{};
     // Transactions keep their old id, which paperless documents refer to;
-    // the extra fee transactions are numbered after the last old row.
-    var extra = 1 + try count(b, "SELECT COALESCE(MAX(id), 0) FROM \"transaction\"");
+    // the extra fee transactions are numbered after every id in use.
+    var extra = 1 + try count(b, "SELECT MAX((SELECT COALESCE(MAX(id), 0) FROM \"transaction\"), (SELECT COALESCE(MAX(id), 0) FROM txn))");
     for (rows.items) |r| {
         if (try mapped(b, r.id) != null) {
-            sum.paired += 1;
+            sum.known += 1;
             continue;
         }
         var rb = b;
@@ -287,7 +276,7 @@ test "old rows become balanced transactions with lots and documents" {
     );
     const s = try migrate(b);
     try testing.expectEqual(@as(usize, 7), s.migrated);
-    try testing.expectEqual(@as(usize, 1), s.paired);
+    try testing.expectEqual(@as(usize, 1), s.known);
     try testing.expectEqual(@as(usize, 3), s.documents);
     try testing.expectEqual(@as(usize, 1), s.dividend_costs_as_kapest);
 
@@ -320,16 +309,13 @@ test "old rows become balanced transactions with lots and documents" {
         return err;
     };
 
-    // A second run rebuilds the journal and picks up edits and deletions.
+    // A second run only adds what is new.
     try b.db.exec(
-        \\UPDATE "transaction" SET total_value = 300 WHERE id = 7;
-        \\DELETE FROM "transaction" WHERE id = 8;
+        \\INSERT INTO "transaction" (id, account, type, total_value, cost, date, currency, exchange_rate)
+        \\VALUES (10, 1, 'interest', 300, 0, '2024-08-31', 'EUR', 1.0);
     );
     const again = try migrate(b);
-    try testing.expectEqual(@as(usize, 6), again.migrated);
-    try testing.expectEqual(@as(usize, 1), again.paired);
-    try testing.expectEqual(@as(usize, 3), again.documents);
-    try testing.expectEqual(@as(i64, -300), try bal(b, "Income:Interest"));
-    try testing.expectEqual(@as(i64, 500000 - 100100 + (1134 - 290) + (52000 - 100) - 20000 - 50 + 300), try bal(b, "Assets:Scalable:Cash"));
-    try testing.expectEqual(@as(i64, 6 * 1_000_000), try bookings.held(b, "Scalable", 1));
+    try testing.expectEqual(@as(usize, 1), again.migrated);
+    try testing.expectEqual(@as(usize, 8), again.known);
+    try testing.expectEqual(@as(i64, -550), try bal(b, "Income:Interest"));
 }

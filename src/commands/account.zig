@@ -16,7 +16,7 @@ pub fn add(app: *App, name: []const u8) !void {
 }
 
 pub fn list(app: *App) !void {
-    try ledger_cmd.rebuild(app);
+    try ledger_cmd.sync(app);
     var st = try app.db.prepare(
         \\SELECT a.name, a.kind, o.name FROM ledger_account a
         \\LEFT JOIN person o ON o.id = a.owner ORDER BY a.name
