@@ -1,13 +1,23 @@
-//! Port of commands/account_cmd.py.
+//! `dv account`: the ledger accounts.
 
 const App = @import("../App.zig");
+const bookings = @import("../bookings.zig");
+const journal = @import("../journal.zig");
 const f = @import("../format.zig");
 const ledger_cmd = @import("ledger.zig");
 
+/// New accounts are only made on request; asset and liability accounts
+/// belong to the configured owner.
 pub fn add(app: *App, name: []const u8) !void {
-    app.db.run("INSERT INTO account (name) VALUES (?)", .{name}) catch |err| switch (err) {
-        error.Constraint => {
-            try app.print("{s}Account '{s}' already exists.{s}\n", .{ f.RED, name, f.RESET });
+    const b: bookings.Book = .{ .db = app.db, .a = app.a, .ledger = app.config.ledger };
+    if (try journal.accountByName(app.db, name) != null) {
+        try app.print("{s}Account '{s}' already exists.{s}\n", .{ f.RED, name, f.RESET });
+        return;
+    }
+    _ = b.ensure(name, try b.person(app.config.ledger.owner)) catch |err| switch (err) {
+        error.InvalidAccountName => {
+            const r = app.config.ledger.roots;
+            try app.print("{s}'{s}' must start with {s}, {s}, {s}, {s} or {s}, followed by ':'.{s}\n", .{ f.RED, name, r.assets, r.liabilities, r.equity, r.income, r.expenses, f.RESET });
             return;
         },
         else => return err,

@@ -51,7 +51,7 @@ fn queryAccounts(app: *App, comptime sql: []const u8, arg: ?[]const u8, buf: *[m
 pub fn accountsLike(app: *App, pattern: []const u8, buf: *[max_matches + 1]Account) ![]Account {
     var pat_buf: [name_max + 2]u8 = undefined;
     const pat = std.fmt.bufPrint(&pat_buf, "%{s}%", .{pattern}) catch return error.TextTooLong;
-    return queryAccounts(app, "SELECT id, name FROM account WHERE name LIKE ?", pat, buf);
+    return queryAccounts(app, "SELECT id, name FROM broker WHERE name LIKE ?", pat, buf);
 }
 
 fn tooMany(app: *App, what: []const u8, pattern: []const u8) !void {
@@ -62,15 +62,15 @@ pub fn getOrPromptAccount(app: *App, account_name: ?[]const u8) !?Account {
     var buf: [max_matches + 1]Account = undefined;
     var results: []Account = undefined;
     if (account_name) |name| {
-        const exact = try queryAccounts(app, "SELECT id, name FROM account WHERE name = ?", name, &buf);
+        const exact = try queryAccounts(app, "SELECT id, name FROM broker WHERE name = ?", name, &buf);
         if (exact.len > 0) return exact[0];
         results = try accountsLike(app, name, &buf);
     } else {
-        results = try queryAccounts(app, "SELECT id, name FROM account", null, &buf);
+        results = try queryAccounts(app, "SELECT id, name FROM broker", null, &buf);
     }
 
     if (results.len == 0) {
-        try app.print("{s}No accounts found. Create one with: dv account add <name>{s}\n", .{ f.RED, f.RESET });
+        try app.print("{s}No brokers found. Create one with: dv broker add <name>{s}\n", .{ f.RED, f.RESET });
         return null;
     }
     if (results.len > max_matches) {
