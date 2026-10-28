@@ -31,7 +31,7 @@ const rows_sql =
 const row_scratch_size = 16 * 1024;
 
 pub fn run(app: *App, account: ?[]const u8, txn_type: ?[]const u8) !void {
-    try ledger_cmd.rebuild(app);
+    try ledger_cmd.sync(app);
 
     var pattern_buf: [256]u8 = undefined;
     const pattern: ?[]const u8 = if (account) |acc|

@@ -62,7 +62,7 @@ const Ctx = struct {
 };
 
 pub fn run(app: *App, kind: Kind, filter: Filter) !void {
-    try ledger_cmd.rebuild(app);
+    try ledger_cmd.sync(app);
     try roles(app);
     const c: Ctx = .{ .app = app, .filter = filter };
     switch (kind) {

@@ -19,7 +19,7 @@ pub fn migrate(app: *App, dry_run: bool) !void {
     const checks = try ledger_migration.compare(b);
 
     try app.print("{s}Ledger migration{s}{s}\n", .{ f.BOLD, if (dry_run) " (dry run, nothing written)" else "", f.RESET });
-    try app.print("  {d} transaction(s) built from the old rows ({d} transfer pair(s)), {d} document link(s)\n", .{ sum.migrated, sum.paired, sum.documents });
+    try app.print("  {d} transaction(s) migrated, {d} already in the journal, {d} document link(s)\n", .{ sum.migrated, sum.known, sum.documents });
     if (sum.dividend_costs_as_kapest > 0)
         try app.print("  {s}{d} dividend cost(s) booked as KapESt; the old rows do not say which tax it was.{s}\n", .{ f.YELLOW, sum.dividend_costs_as_kapest, f.RESET });
 
@@ -51,9 +51,9 @@ pub fn migrate(app: *App, dry_run: bool) !void {
     try app.print("\n{s}Journal written.{s}\n", .{ f.GREEN, f.RESET });
 }
 
-/// Until the commands write the journal, readers rebuild it from the old rows
-/// first so it never lags behind an add, edit or import.
-pub fn rebuild(app: *App) !void {
+/// Until every command writes the journal, readers first bring over the old
+/// rows written since the last run.
+pub fn sync(app: *App) !void {
     const b: bookings.Book = .{ .db = app.db, .a = app.a, .ledger = app.config.ledger };
     try app.db.exec("BEGIN");
     errdefer app.db.exec("ROLLBACK") catch {};
@@ -62,6 +62,6 @@ pub fn rebuild(app: *App) !void {
 }
 
 pub fn exportBeancount(app: *App) !void {
-    try rebuild(app);
+    try sync(app);
     try beancount.write(app.db, app.a, app.config.ledger.roots, app.out);
 }
