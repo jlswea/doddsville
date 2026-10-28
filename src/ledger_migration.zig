@@ -75,12 +75,17 @@ pub fn migrate(b: bookings.Book) !Summary {
     }
 
     var sum: Summary = .{};
+    // Transactions keep their old id, which paperless documents refer to;
+    // the extra fee transactions are numbered after the last old row.
+    var extra = 1 + try count(b, "SELECT COALESCE(MAX(id), 0) FROM \"transaction\"");
     for (rows.items) |r| {
         if (try mapped(b, r.id) != null) {
             sum.paired += 1;
             continue;
         }
-        const txn = try book(b, rows.items, r, &sum);
+        var rb = b;
+        rb.id = r.id;
+        const txn = try book(rb, rows.items, r, &sum, &extra);
         try b.db.run("INSERT INTO migrated_transaction (old, txn) VALUES (?, ?)", .{ r.id, txn });
         if (r.linked) |partner| if (std.mem.eql(u8, r.kind, "transfer"))
             try b.db.run("INSERT OR IGNORE INTO migrated_transaction (old, txn) VALUES (?, ?)", .{ partner, txn });
@@ -111,7 +116,7 @@ fn mapped(b: bookings.Book, old: i64) !?i64 {
     return if (try st.step()) st.int(0) else null;
 }
 
-fn book(b: bookings.Book, rows: []const Old, r: Old, sum: *Summary) !i64 {
+fn book(b: bookings.Book, rows: []const Old, r: Old, sum: *Summary, extra: *i64) !i64 {
     const eq = std.mem.eql;
     const total = eur(r.total, r.rate);
     if (eq(u8, r.kind, "buy") or eq(u8, r.kind, "sell")) {
@@ -140,7 +145,12 @@ fn book(b: bookings.Book, rows: []const Old, r: Old, sum: *Summary) !i64 {
     else
         return error.UnknownType;
     // Costs on these rows were fees charged alongside.
-    if (r.cost != 0) _ = try bookings.fee(b, r.account, r.date, r.cost);
+    if (r.cost != 0) {
+        var fb = b;
+        fb.id = extra.*;
+        extra.* += 1;
+        _ = try bookings.fee(fb, r.account, r.date, r.cost);
+    }
     return id;
 }
 
@@ -298,6 +308,12 @@ test "old rows become balanced transactions with lots and documents" {
     _ = try st.step();
     try testing.expectEqual(@as(i64, 0), st.int(0));
     try testing.expectEqual(@as(i64, 8), st.int(1));
+
+    // Old ids survive; the transfer fee follows the last old row.
+    var ids = try b.db.prepare("SELECT group_concat(id, ',') FROM (SELECT id FROM txn ORDER BY id)");
+    defer ids.finalize();
+    _ = try ids.step();
+    try testing.expectEqualStrings("1,2,3,4,5,7,8,9", ids.textRef(0).?);
 
     for (try compare(b)) |c| testing.expect(c.ok()) catch |err| {
         std.debug.print("check failed: {s} old={d} new={d}\n", .{ c.label, c.old, c.new });

@@ -16,6 +16,8 @@ pub const Book = struct {
     db: sqlite.Db,
     a: Allocator,
     ledger: Config.Ledger,
+    /// Id for the next booked transaction; the database picks one when null.
+    id: ?i64 = null,
 
     pub fn person(b: Book, name: []const u8) Error!i64 {
         var st = try b.db.prepare("SELECT id FROM person WHERE name = ?");
@@ -56,7 +58,7 @@ fn positive(cents: i64) Error!void {
 pub fn deposit(b: Book, broker: []const u8, date: []const u8, cents: i64) Error!i64 {
     try positive(cents);
     const acc = try b.broker(broker);
-    return journal.insert(b.db, .{ .date = date, .description = "deposit", .postings = &.{
+    return journal.insert(b.db, .{ .id = b.id, .date = date, .description = "deposit", .postings = &.{
         .{ .account = acc.cash, .amount = cents },
         .{ .account = try b.role(b.ledger.accounts.contributions), .amount = -cents },
     } });
@@ -65,7 +67,7 @@ pub fn deposit(b: Book, broker: []const u8, date: []const u8, cents: i64) Error!
 pub fn withdrawal(b: Book, broker: []const u8, date: []const u8, cents: i64) Error!i64 {
     try positive(cents);
     const acc = try b.broker(broker);
-    return journal.insert(b.db, .{ .date = date, .description = "withdrawal", .postings = &.{
+    return journal.insert(b.db, .{ .id = b.id, .date = date, .description = "withdrawal", .postings = &.{
         .{ .account = acc.cash, .amount = -cents },
         .{ .account = try b.role(b.ledger.accounts.contributions), .amount = cents },
     } });
@@ -74,7 +76,7 @@ pub fn withdrawal(b: Book, broker: []const u8, date: []const u8, cents: i64) Err
 pub fn interest(b: Book, broker: []const u8, date: []const u8, cents: i64) Error!i64 {
     try positive(cents);
     const acc = try b.broker(broker);
-    return journal.insert(b.db, .{ .date = date, .description = "interest", .postings = &.{
+    return journal.insert(b.db, .{ .id = b.id, .date = date, .description = "interest", .postings = &.{
         .{ .account = acc.cash, .amount = cents },
         .{ .account = try b.role(b.ledger.accounts.interest), .amount = -cents },
     } });
@@ -85,7 +87,7 @@ pub fn interest(b: Book, broker: []const u8, date: []const u8, cents: i64) Error
 pub fn fee(b: Book, broker: []const u8, date: []const u8, cents: i64) Error!i64 {
     try positive(cents);
     const acc = try b.broker(broker);
-    return journal.insert(b.db, .{ .date = date, .description = "fee", .postings = &.{
+    return journal.insert(b.db, .{ .id = b.id, .date = date, .description = "fee", .postings = &.{
         .{ .account = try b.role(b.ledger.accounts.fees), .amount = cents },
         .{ .account = acc.cash, .amount = -cents },
     } });
@@ -109,7 +111,7 @@ pub fn taxRefund(b: Book, broker: []const u8, date: []const u8, refund: Taxes) E
     var postings: std.ArrayList(journal.Posting) = .empty;
     try postings.append(b.a, .{ .account = acc.cash, .amount = refund.total() });
     try appendTaxes(b, &postings, refund, -1);
-    return journal.insert(b.db, .{ .date = date, .description = "tax refund", .postings = postings.items });
+    return journal.insert(b.db, .{ .id = b.id, .date = date, .description = "tax refund", .postings = postings.items });
 }
 
 fn appendTaxes(b: Book, postings: *std.ArrayList(journal.Posting), t: Taxes, sign: i64) Error!void {
@@ -130,7 +132,7 @@ pub fn transfer(b: Book, from: []const u8, to: []const u8, date: []const u8, cen
     try positive(cents);
     const src = try b.broker(from);
     const dst = try b.broker(to);
-    return journal.insert(b.db, .{ .date = date, .description = "transfer", .postings = &.{
+    return journal.insert(b.db, .{ .id = b.id, .date = date, .description = "transfer", .postings = &.{
         .{ .account = src.cash, .amount = -cents },
         .{ .account = dst.cash, .amount = cents },
     } });
@@ -173,7 +175,7 @@ fn buyInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
     if (t.fees < 0) return error.NotPositive;
     const acc = try b.broker(broker);
     const cost = std.math.add(i64, t.total, t.fees) catch return error.Unbalanced;
-    const id = try journal.insert(b.db, .{ .date = t.date, .description = "buy", .postings = &.{
+    const id = try journal.insert(b.db, .{ .id = b.id, .date = t.date, .description = "buy", .postings = &.{
         .{ .account = acc.depot, .amount = cost, .security = t.security, .quantity = t.quantity },
         .{ .account = acc.cash, .amount = -cost },
     } });
@@ -248,7 +250,7 @@ fn sellInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
     try appendTaxes(b, &postings, t.taxes, 1);
     try postings.append(b.a, .{ .account = acc.depot, .amount = -basis, .security = t.security, .quantity = -t.quantity });
     if (gain != 0) try postings.append(b.a, .{ .account = try b.role(gains_account), .amount = -gain });
-    const id = try journal.insert(b.db, .{ .date = t.date, .description = "sell", .postings = postings.items });
+    const id = try journal.insert(b.db, .{ .id = b.id, .date = t.date, .description = "sell", .postings = postings.items });
 
     var proceeds_left = net;
     for (takes.items, 0..) |tk, i| {
@@ -285,7 +287,7 @@ pub fn dividend(b: Book, broker: []const u8, d: Dividend) Error!i64 {
         .currency = d.currency,
         .original = if (d.original) |o| -o else null,
     });
-    return journal.insert(b.db, .{ .date = d.date, .description = "dividend", .postings = postings.items });
+    return journal.insert(b.db, .{ .id = b.id, .date = d.date, .description = "dividend", .postings = postings.items });
 }
 
 /// Shares held in a broker's depot, in millionths.
