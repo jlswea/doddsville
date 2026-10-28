@@ -64,18 +64,20 @@ amount. The EUR amount is the cost, not the market value.
 
 Each buy opens a **lot**: so many shares, bought on this date, for this cost. Trade
 fees are part of the cost (Anschaffungsnebenkosten), so they go into the lot,
-not to `Expenses:Fees`.
+not to `Expenses:Fees`. The fee keeps a posting of its own, marked as a fee, so
+it stays visible:
 
 ```
 2026-02-02  Buy 10 ACME at 100.00, fee 1.00
-  Assets:Scalable:Depot     +10 ACME      +1001.00
+  Assets:Scalable:Depot     +10 ACME      +1000.00
+  Assets:Scalable:Depot     fee              +1.00
   Assets:Scalable:Cash                    -1001.00
 ```
 
 A sale closes the oldest lots first (FIFO, as § 20 Abs. 4 Satz 7 EStG requires
 per securities account). The depot loses the closed lots' cost, cash gets the
 proceeds, and the difference is the gain. Sale fees reduce the gain, so the gain
-account holds what is taxable:
+account holds what is taxable in total:
 
 ```
 2026-06-10  Sell 4 ACME at 130.00, fee 1.00
@@ -83,7 +85,8 @@ account holds what is taxable:
   Expenses:Tax:KapESt                       +29.65
   Expenses:Tax:Soli                          +1.63
   Assets:Scalable:Depot     -4 ACME        -400.40
-  Income:Gains:Shares                      -118.60
+  Income:Gains:Shares                      -119.60
+  Income:Gains:Shares       fee              +1.00
 ```
 
 The four shares cost 4/10 × 1001.00 = 400.40. The gain is 520.00 − 1.00 −
