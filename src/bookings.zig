@@ -18,6 +18,9 @@ pub const Book = struct {
     ledger: Config.Ledger,
     /// Id for the next booked transaction; the database picks one when null.
     id: ?i64 = null,
+    /// Trades only write their postings; a `replay` afterwards opens and
+    /// closes the lots and sets each sale's cost and gain.
+    defer_lots: bool = false,
 
     pub fn person(b: Book, name: []const u8) Error!i64 {
         var st = try b.db.prepare("SELECT id FROM person WHERE name = ?");
@@ -181,7 +184,7 @@ fn buyInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
     if (t.fees > 0) try postings.append(b.a, .{ .account = acc.depot, .amount = t.fees, .security = t.security, .fee = true });
     try postings.append(b.a, .{ .account = acc.cash, .amount = -cost });
     const id = try journal.insert(b.db, .{ .id = b.id, .date = t.date, .description = "buy", .postings = postings.items });
-    try b.db.run("INSERT INTO lot (account, security, txn, opened, quantity, cost) VALUES (?, ?, ?, ?, ?, ?)", .{ acc.depot, t.security, id, t.date, t.quantity, cost });
+    if (!b.defer_lots) try b.db.run("INSERT INTO lot (account, security, txn, opened, quantity, cost) VALUES (?, ?, ?, ?, ?, ?)", .{ acc.depot, t.security, id, t.date, t.quantity, cost });
     return id;
 }
 
@@ -227,7 +230,7 @@ fn sellInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
     try positive(t.total);
     if (t.fees < 0) return error.NotPositive;
     const acc = try b.broker(broker);
-    const taken = try fifo(b, acc.depot, t.security, t.quantity);
+    const taken: Taken = if (b.defer_lots) .{ .takes = &.{}, .basis = 0 } else try fifo(b, acc.depot, t.security, t.quantity);
 
     const net = t.total - t.fees;
     const gain = net - taken.basis;
@@ -239,7 +242,7 @@ fn sellInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
     if (gain + t.fees != 0) try postings.append(b.a, .{ .account = gains, .amount = -(gain + t.fees) });
     if (t.fees > 0) try postings.append(b.a, .{ .account = gains, .amount = t.fees, .fee = true });
     const id = try journal.insert(b.db, .{ .id = b.id, .date = t.date, .description = "sell", .postings = postings.items });
-    try closeLots(b, id, taken.takes, t.quantity, net);
+    if (!b.defer_lots) try closeLots(b, id, taken.takes, t.quantity, net);
     return id;
 }
 
