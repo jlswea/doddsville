@@ -6,6 +6,7 @@ const App = @import("../App.zig");
 const f = @import("../format.zig");
 const ledger = @import("../ledger.zig");
 const lookup = @import("../lookup.zig");
+const ledger_cmd = @import("ledger.zig");
 const paperless = @import("../paperless.zig");
 
 pub const Kind = enum {
@@ -188,6 +189,7 @@ fn printDocs(app: *App, ids: []const i64) !void {
 
 fn linkDocs(app: *App, txn_id: i64, resolved: paperless.Resolved) !void {
     if (resolved.ids.len > 0) {
+        try ledger_cmd.sync(app);
         try paperless.insertTransactionDocuments(app, txn_id, resolved.ids);
         try app.print("Linked {d} document(s) to transaction {d}\n", .{ resolved.ids.len, txn_id });
         try paperless.backlink(app, resolved.ids, &.{txn_id});

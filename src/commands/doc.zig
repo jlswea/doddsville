@@ -4,12 +4,14 @@ const std = @import("std");
 const json = std.json;
 const App = @import("../App.zig");
 const f = @import("../format.zig");
+const ledger_cmd = @import("ledger.zig");
 const paperless = @import("../paperless.zig");
 const ui = @import("../ui.zig");
 
 pub fn add(app: *App, txn_id: i64, docs: []const []const u8) !void {
+    try ledger_cmd.sync(app);
     {
-        var st = try app.db.prepare("SELECT id FROM \"transaction\" WHERE id = ?");
+        var st = try app.db.prepare("SELECT id FROM txn WHERE id = ?");
         defer st.finalize();
         try st.bindAll(.{txn_id});
         if (!try st.step()) {
@@ -22,7 +24,7 @@ pub fn add(app: *App, txn_id: i64, docs: []const []const u8) !void {
     if (resolved.ids.len > 0) {
         var existing: std.ArrayList(i64) = .empty;
         {
-            var st = try app.db.prepare("SELECT paperless_id FROM transaction_document WHERE transaction_id = ?");
+            var st = try app.db.prepare("SELECT paperless_id FROM txn_document WHERE txn = ?");
             defer st.finalize();
             try st.bindAll(.{txn_id});
             while (try st.step()) try existing.append(app.a, st.int(0));
@@ -141,7 +143,7 @@ fn editInner(app: *App, cl: *paperless.Client, doc_id: i64) !void {
     // Make sure the backlink (dv_transaction_id) exists on the document.
     var linked: std.ArrayList(i64) = .empty;
     {
-        var st = try app.db.prepare("SELECT transaction_id FROM transaction_document WHERE paperless_id = ?");
+        var st = try app.db.prepare("SELECT txn FROM txn_document WHERE paperless_id = ?");
         defer st.finalize();
         try st.bindAll(.{doc_id});
         while (try st.step()) try linked.append(a, st.int(0));

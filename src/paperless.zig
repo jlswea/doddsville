@@ -521,7 +521,7 @@ fn failAll(app: *App, cl: *Client, err: anyerror, doc_args: []const []const u8) 
 
 pub fn insertTransactionDocuments(app: *App, txn_id: i64, doc_ids: []const i64) !void {
     for (doc_ids) |d|
-        try app.db.run("INSERT INTO transaction_document (transaction_id, paperless_id) VALUES (?, ?)", .{ txn_id, d });
+        try app.db.run("INSERT INTO txn_document (txn, paperless_id) VALUES (?, ?)", .{ txn_id, d });
 }
 
 pub fn initMessage(err: anyerror) []const u8 {
@@ -532,7 +532,7 @@ pub fn initMessage(err: anyerror) []const u8 {
     };
 }
 
-/// Link documents on both sides: rows in transaction_document plus the
+/// Link documents on both sides: rows in txn_document plus the
 /// dv_transaction_id custom field in paperless. Shared by `add` and `doc add`.
 pub fn backlink(app: *App, doc_ids: []const i64, txn_ids: []const i64) !void {
     var cl = Client.init(app) catch |err| {

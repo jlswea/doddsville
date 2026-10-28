@@ -8,6 +8,7 @@ const f = @import("../format.zig");
 const importer = @import("../importer.zig");
 const lookup = @import("../lookup.zig");
 const ollama = @import("../ollama.zig");
+const ledger_cmd = @import("ledger.zig");
 const paperless = @import("../paperless.zig");
 const parsers = @import("../parsers/parsers.zig");
 const pdf = @import("../pdf/pdf.zig");
@@ -135,6 +136,7 @@ fn upload(app: *App, path: []const u8, result: parsers.Result, txn_ids: []const 
         return manualHint(app, path);
     };
     try paperless.printUploaded(app, up);
+    try ledger_cmd.sync(app);
     for (txn_ids) |tid| try paperless.insertTransactionDocuments(app, tid, &.{up.id});
     try app.print("  Linked document to {d} transaction(s)\n", .{txn_ids.len});
     try paperless.backlink(app, &.{up.id}, txn_ids);
