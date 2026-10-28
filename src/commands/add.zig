@@ -4,9 +4,8 @@
 const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
-const ledger = @import("../ledger.zig");
+const bookings = @import("../bookings.zig");
 const lookup = @import("../lookup.zig");
-const ledger_cmd = @import("ledger.zig");
 const paperless = @import("../paperless.zig");
 
 pub const Kind = enum {
@@ -86,30 +85,44 @@ pub fn run(app: *App, args: Args) !void {
 
     if (!confirmed(try app.input("\nCommit? (y/N) "))) return;
 
-    const type_name = @tagName(args.kind);
-    if (args.kind.hasQuantity()) {
-        try app.db.run(
-            \\INSERT INTO "transaction"
-            \\   (account, security, type, quantity, unit_value, total_value, cost, date)
-            \\   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        , .{ account.id, security.?.id, type_name, args.quantity, args.amount, total, args.cost, args.date });
-    } else if (security) |s| {
-        try app.db.run(
-            \\INSERT INTO "transaction"
-            \\   (account, security, type, total_value, cost, date)
-            \\   VALUES (?, ?, ?, ?, ?, ?)
-        , .{ account.id, s.id, type_name, args.amount, args.cost, args.date });
-    } else {
-        try app.db.run(
-            \\INSERT INTO "transaction"
-            \\   (account, type, total_value, cost, date)
-            \\   VALUES (?, ?, ?, ?, ?)
-        , .{ account.id, type_name, args.amount, args.cost, args.date });
-    }
-    const txn_id = app.db.lastInsertRowId();
+    const b = book(app);
+    const name = account.name.slice();
+    const sec = if (security) |x| x.id else 0;
+    const txn_id = bookOne(b, args, name, sec, total) catch |err| switch (err) {
+        error.InsufficientHolding => {
+            try app.print("{s}Not enough shares held to sell {s}.{s}\n", .{ f.RED, try f.quantity(app.a, args.quantity), f.RESET });
+            return;
+        },
+        error.NotPositive => {
+            try app.print("{s}Amounts must be positive.{s}\n", .{ f.RED, f.RESET });
+            return;
+        },
+        else => return err,
+    };
     try app.print("{s}Transaction recorded (ID: {d}).{s}\n", .{ f.GREEN, txn_id, f.RESET });
 
     try linkDocs(app, txn_id, resolved);
+}
+
+fn book(app: *App) bookings.Book {
+    return .{ .db = app.db, .a = app.a, .ledger = app.config.ledger };
+}
+
+/// The transaction for one `dv add`. A cost on a cash booking is a fee
+/// charged alongside and gets its own transaction.
+fn bookOne(b: bookings.Book, args: Args, broker: []const u8, security: i64, total: i64) !i64 {
+    const trade: bookings.Trade = .{ .date = args.date, .security = security, .quantity = args.quantity, .total = total, .fees = args.cost };
+    const id = switch (args.kind) {
+        .buy => return bookings.buy(b, broker, trade),
+        .sell => return bookings.sell(b, broker, trade),
+        .dividend => return bookings.dividend(b, broker, .{ .date = args.date, .security = security, .gross = args.amount, .taxes = .{ .kapest = args.cost } }),
+        .interest => try bookings.interest(b, broker, args.date, args.amount),
+        .deposit => try bookings.deposit(b, broker, args.date, args.amount),
+        .withdrawal => try bookings.withdrawal(b, broker, args.date, args.amount),
+        .transfer => unreachable,
+    };
+    if (args.cost > 0) _ = try bookings.fee(b, broker, args.date, args.cost);
+    return id;
 }
 
 fn transfer(app: *App, args: Args) !void {
@@ -133,26 +146,11 @@ fn transfer(app: *App, args: Args) !void {
 
     if (!confirmed(try app.input("\nCommit? (y/N) "))) return;
 
-    try app.db.exec("BEGIN");
-    errdefer app.db.exec("ROLLBACK") catch {};
-    try app.db.run(
-        \\INSERT INTO "transaction"
-        \\   (account, type, total_value, cost, date)
-        \\   VALUES (?, 'transfer', ?, ?, ?)
-    , .{ from.id, -args.amount, args.cost, args.date });
-    const outgoing = app.db.lastInsertRowId();
-    try app.db.run(
-        \\INSERT INTO "transaction"
-        \\   (account, type, total_value, cost, date, linked_transaction)
-        \\   VALUES (?, 'transfer', ?, 0, ?, ?)
-    , .{ to.id, args.amount, args.date, outgoing });
-    const incoming = app.db.lastInsertRowId();
-    try app.db.run("UPDATE \"transaction\" SET linked_transaction = ? WHERE id = ?", .{ incoming, outgoing });
-    try ledger.assertTransferPair(app.db, outgoing, incoming);
-    try app.db.exec("COMMIT");
-
-    try app.print("{s}Transfer recorded (IDs: {d} <-> {d}).{s}\n", .{ f.GREEN, outgoing, incoming, f.RESET });
-    try linkDocs(app, outgoing, resolved);
+    const b = book(app);
+    const id = try bookings.transfer(b, from.name.slice(), to.name.slice(), args.date, args.amount);
+    if (args.cost > 0) _ = try bookings.fee(b, from.name.slice(), args.date, args.cost);
+    try app.print("{s}Transfer recorded (ID: {d}).{s}\n", .{ f.GREEN, id, f.RESET });
+    try linkDocs(app, id, resolved);
 }
 
 fn pickAccount(app: *App, pattern: []const u8, label: []const u8, prompt: []const u8) !?lookup.Account {
@@ -189,7 +187,6 @@ fn printDocs(app: *App, ids: []const i64) !void {
 
 fn linkDocs(app: *App, txn_id: i64, resolved: paperless.Resolved) !void {
     if (resolved.ids.len > 0) {
-        try ledger_cmd.sync(app);
         try paperless.insertTransactionDocuments(app, txn_id, resolved.ids);
         try app.print("Linked {d} document(s) to transaction {d}\n", .{ resolved.ids.len, txn_id });
         try paperless.backlink(app, resolved.ids, &.{txn_id});
