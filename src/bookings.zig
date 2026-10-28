@@ -227,13 +227,35 @@ fn sellInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
     try positive(t.total);
     if (t.fees < 0) return error.NotPositive;
     const acc = try b.broker(broker);
-    const lots = try openLots(b, acc.depot, t.security);
+    const taken = try fifo(b, acc.depot, t.security, t.quantity);
 
-    const Take = struct { lot: i64, quantity: i64, cost: i64 };
+    const net = t.total - t.fees;
+    const gain = net - taken.basis;
+    var postings: std.ArrayList(journal.Posting) = .empty;
+    try postings.append(b.a, .{ .account = acc.cash, .amount = net - t.taxes.total() });
+    try appendTaxes(b, &postings, t.taxes, 1);
+    try postings.append(b.a, .{ .account = acc.depot, .amount = -taken.basis, .security = t.security, .quantity = -t.quantity });
+    const gains = try gainsAccount(b, t.security);
+    if (gain + t.fees != 0) try postings.append(b.a, .{ .account = gains, .amount = -(gain + t.fees) });
+    if (t.fees > 0) try postings.append(b.a, .{ .account = gains, .amount = t.fees, .fee = true });
+    const id = try journal.insert(b.db, .{ .id = b.id, .date = t.date, .description = "sell", .postings = postings.items });
+    try closeLots(b, id, taken.takes, t.quantity, net);
+    return id;
+}
+
+fn gainsAccount(b: Book, security: i64) Error!i64 {
+    return b.role(if (try isShare(b, security)) b.ledger.accounts.gains_shares else b.ledger.accounts.gains_other);
+}
+
+const Take = struct { lot: i64, quantity: i64, cost: i64 };
+const Taken = struct { takes: []const Take, basis: i64 };
+
+/// Takes `quantity` from the oldest open lots.
+fn fifo(b: Book, depot: i64, security: i64, quantity: i64) Error!Taken {
     var takes: std.ArrayList(Take) = .empty;
-    var left = t.quantity;
+    var left = quantity;
     var basis: i64 = 0;
-    for (lots) |l| {
+    for (try openLots(b, depot, security)) |l| {
         if (left == 0) break;
         const q = @min(left, l.quantity);
         // The last piece of a lot takes its exact remaining cost.
@@ -243,26 +265,83 @@ fn sellInner(b: Book, broker: []const u8, t: Trade) Error!i64 {
         left -= q;
     }
     if (left > 0) return error.InsufficientHolding;
+    return .{ .takes = takes.items, .basis = basis };
+}
 
-    const net = t.total - t.fees;
-    const gain = net - basis;
-    const gains_account = if (try isShare(b, t.security)) b.ledger.accounts.gains_shares else b.ledger.accounts.gains_other;
-    var postings: std.ArrayList(journal.Posting) = .empty;
-    try postings.append(b.a, .{ .account = acc.cash, .amount = net - t.taxes.total() });
-    try appendTaxes(b, &postings, t.taxes, 1);
-    try postings.append(b.a, .{ .account = acc.depot, .amount = -basis, .security = t.security, .quantity = -t.quantity });
-    const gains = try b.role(gains_account);
-    if (gain + t.fees != 0) try postings.append(b.a, .{ .account = gains, .amount = -(gain + t.fees) });
-    if (t.fees > 0) try postings.append(b.a, .{ .account = gains, .amount = t.fees, .fee = true });
-    const id = try journal.insert(b.db, .{ .id = b.id, .date = t.date, .description = "sell", .postings = postings.items });
-
+/// Records which lots a sale closed; the net proceeds are split by quantity.
+fn closeLots(b: Book, txn: i64, takes: []const Take, quantity: i64, net: i64) Error!void {
     var proceeds_left = net;
-    for (takes.items, 0..) |tk, i| {
-        const share = if (i == takes.items.len - 1) proceeds_left else mulDiv(net, tk.quantity, t.quantity);
-        proceeds_left -= share;
-        try b.db.run("INSERT INTO lot_close (lot, txn, quantity, cost, proceeds) VALUES (?, ?, ?, ?, ?)", .{ tk.lot, id, tk.quantity, tk.cost, share });
+    for (takes, 0..) |tk, i| {
+        const part = if (i == takes.len - 1) proceeds_left else mulDiv(net, tk.quantity, quantity);
+        proceeds_left -= part;
+        try b.db.run("INSERT INTO lot_close (lot, txn, quantity, cost, proceeds) VALUES (?, ?, ?, ?, ?)", .{ tk.lot, txn, tk.quantity, tk.cost, part });
     }
-    return id;
+}
+
+/// Rebuilds the lots of `security` in `depot` from its trades in date order
+/// and recomputes each sale's cost and gain, e.g. after an earlier trade was
+/// corrected. Returns the sales whose gain changed.
+pub fn replay(b: Book, depot: i64, security: i64) Error![]const i64 {
+    try b.db.run("DELETE FROM lot_close WHERE lot IN (SELECT id FROM lot WHERE account = ? AND security = ?)", .{ depot, security });
+    try b.db.run("DELETE FROM lot WHERE account = ? AND security = ?", .{ depot, security });
+
+    const Trade_ = struct { txn: i64, date: []const u8, posting: i64, quantity: i64 };
+    var trades: std.ArrayList(Trade_) = .empty;
+    {
+        var st = try b.db.prepare(
+            \\SELECT t.id, t.date, p.id, p.quantity FROM posting p JOIN txn t ON t.id = p.txn
+            \\WHERE p.account = ? AND p.security = ? AND p.quantity IS NOT NULL
+            \\ORDER BY t.date, t.id, p.id
+        );
+        defer st.finalize();
+        try st.bindAll(.{ depot, security });
+        while (try st.step()) try trades.append(b.a, .{ .txn = st.int(0), .date = (try st.text(b.a, 1)).?, .posting = st.int(2), .quantity = st.int(3) });
+    }
+
+    const gain_names = [_][]const u8{ b.ledger.accounts.gains_shares, b.ledger.accounts.gains_other };
+    var changed: std.ArrayList(i64) = .empty;
+    for (trades.items) |tr| {
+        if (tr.quantity > 0) {
+            const cost = try sum(b, "SELECT SUM(amount) FROM posting WHERE txn = ? AND account = ? AND security = ?", .{ tr.txn, depot, security });
+            try b.db.run("INSERT INTO lot (account, security, txn, opened, quantity, cost) VALUES (?, ?, ?, ?, ?, ?)", .{ depot, security, tr.txn, tr.date, tr.quantity, cost });
+            continue;
+        }
+        const quantity = -tr.quantity;
+        const taken = try fifo(b, depot, security, quantity);
+        const in_gains = "account IN (SELECT id FROM ledger_account WHERE name IN (?, ?))";
+        const net = try sum(b, "SELECT COALESCE(SUM(amount), 0) FROM posting WHERE txn = ? AND id != ? AND NOT " ++ in_gains, .{ tr.txn, tr.posting, gain_names[0], gain_names[1] });
+        const fees = try sum(b, "SELECT COALESCE(SUM(amount), 0) FROM posting WHERE txn = ? AND fee AND " ++ in_gains, .{ tr.txn, gain_names[0], gain_names[1] });
+        const amount = -(net - taken.basis + fees);
+
+        try b.db.run("UPDATE posting SET amount = ? WHERE id = ?", .{ -taken.basis, tr.posting });
+        var st = try b.db.prepare("SELECT id, amount FROM posting WHERE txn = ? AND NOT fee AND " ++ in_gains ++ " LIMIT 1");
+        defer st.finalize();
+        try st.bindAll(.{ tr.txn, gain_names[0], gain_names[1] });
+        const before: i64 = if (try st.step()) blk: {
+            const id = st.int(0);
+            const old = st.int(1);
+            if (amount == 0)
+                try b.db.run("DELETE FROM posting WHERE id = ?", .{id})
+            else
+                try b.db.run("UPDATE posting SET amount = ? WHERE id = ?", .{ amount, id });
+            break :blk old;
+        } else blk: {
+            if (amount != 0) try b.db.run("INSERT INTO posting (txn, account, amount) VALUES (?, ?, ?)", .{ tr.txn, try gainsAccount(b, security), amount });
+            break :blk 0;
+        };
+        if (before != amount) try changed.append(b.a, tr.txn);
+        try closeLots(b, tr.txn, taken.takes, quantity, net);
+        try journal.assertBalanced(b.db, tr.txn);
+    }
+    return changed.items;
+}
+
+fn sum(b: Book, sql: []const u8, args: anytype) Error!i64 {
+    var st = try b.db.prepare(sql);
+    defer st.finalize();
+    try st.bindAll(args);
+    _ = try st.step();
+    return st.int(0);
 }
 
 pub const Dividend = struct {
@@ -467,6 +546,32 @@ test "buy capitalises fees; sell closes lots FIFO and books the gain" {
     defer st.finalize();
     _ = try st.step();
     try testing.expectEqual(@as(i64, 0), st.int(0));
+}
+
+test "replay recomputes later sales after a corrected buy" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const b = try testBook(arena.allocator(), .{ .owner = "Name" });
+    defer b.db.close();
+    try b.db.exec("INSERT INTO security (isin, name, type) VALUES ('US0378331005', 'Example Inc.', 'stock')");
+    const m = 1_000_000;
+    const first = try buy(b, "Scalable", .{ .date = "2024-01-10", .security = 1, .quantity = 10 * m, .total = 100000, .fees = 100 });
+    _ = try buy(b, "Scalable", .{ .date = "2024-02-10", .security = 1, .quantity = 10 * m, .total = 120000 });
+    const sale = try sell(b, "Scalable", .{ .date = "2024-03-10", .security = 1, .quantity = 15 * m, .total = 195000, .fees = 100, .taxes = .{ .kapest = 1000 } });
+    const before = try balance(b, "Income:Gains:Shares");
+
+    // The first buy was 110.00 a share, not 100.00.
+    try b.db.run("UPDATE posting SET amount = amount + 10000 WHERE txn = ? AND quantity IS NOT NULL", .{first});
+    try b.db.run("UPDATE posting SET amount = amount - 10000 WHERE txn = ? AND account = (SELECT id FROM ledger_account WHERE name = 'Assets:Scalable:Cash')", .{first});
+    const depot = (try journal.accountByName(b.db, "Assets:Scalable:Depot")).?.id;
+    const changed = try replay(b, depot, 1);
+    try testing.expectEqualSlices(i64, &.{sale}, changed);
+    try testing.expectEqual(before + 10000, try balance(b, "Income:Gains:Shares"));
+    try testing.expectEqual(@as(i64, 5 * m), try held(b, "Scalable", 1));
+    try testing.expectEqual(@as(i64, 60000), try balance(b, "Assets:Scalable:Depot"));
+
+    // Nothing left to change on a second run.
+    try testing.expectEqual(@as(usize, 0), (try replay(b, depot, 1)).len);
 }
 
 test "fractional ETF shares go to the other gains account" {
