@@ -89,6 +89,7 @@ pub const Posting = struct {
     /// Millionths of a share; needs `security`. A security without a quantity
     /// tags the posting, e.g. a dividend or a cost adjustment.
     quantity: ?i64 = null,
+    fee: bool = false,
 };
 
 pub const Txn = struct {
@@ -126,9 +127,9 @@ pub fn insert(db: sqlite.Db, t: Txn) Error!i64 {
     try db.run("INSERT INTO txn (id, date, description) VALUES (?, ?, ?)", .{ t.id, t.date, t.description });
     const id = db.lastInsertRowId();
     for (t.postings) |p| try db.run(
-        \\INSERT INTO posting (txn, account, amount, currency, original, security, quantity)
-        \\VALUES (?, ?, ?, ?, ?, ?, ?)
-    , .{ id, p.account, p.amount, p.currency, p.original, p.security, p.quantity });
+        \\INSERT INTO posting (txn, account, amount, currency, original, security, quantity, fee)
+        \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    , .{ id, p.account, p.amount, p.currency, p.original, p.security, p.quantity, @intFromBool(p.fee) });
     try assertBalanced(db, id);
     return id;
 }
