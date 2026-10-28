@@ -5,10 +5,10 @@
 const std = @import("std");
 const App = @import("../App.zig");
 const f = @import("../format.zig");
+const bookings = @import("../bookings.zig");
 const importer = @import("../importer.zig");
 const lookup = @import("../lookup.zig");
 const ollama = @import("../ollama.zig");
-const ledger_cmd = @import("ledger.zig");
 const paperless = @import("../paperless.zig");
 const parsers = @import("../parsers/parsers.zig");
 const pdf = @import("../pdf/pdf.zig");
@@ -58,7 +58,7 @@ pub fn run(app: *App, opts: Options) !void {
     var rows = try importer.rows(app.a, result);
 
     const account = (try lookup.getOrPromptAccount(app, opts.account)) orelse return;
-    try resolve(app, &rows, account.id);
+    try resolve(app, &rows, account.name.slice());
     if (rows.items.len == 0) {
         try app.print("{s}No valid transactions remaining after security resolution.{s}\n", .{ f.RED, f.RESET });
         return;
@@ -66,7 +66,7 @@ pub fn run(app: *App, opts: Options) !void {
     try preview(app, rows.items, account.name.slice());
 
     if (std.ascii.eqlIgnoreCase(f.strip(try app.input("\nEdit transactions? (y/N) ")), "y")) {
-        try editRows(app, &rows, account.id);
+        try editRows(app, &rows, account.name.slice());
         if (rows.items.len == 0) {
             try app.print("{s}No transactions remaining after editing.{s}\n", .{ f.RED, f.RESET });
             return;
@@ -92,7 +92,13 @@ pub fn run(app: *App, opts: Options) !void {
         try app.line("Import cancelled.");
         return;
     }
-    const ids = try importer.commit(app.db, app.a, rows.items, account.id);
+    const ids = importer.commit(book(app), rows.items, account.name.slice()) catch |err| switch (err) {
+        error.InsufficientHolding => {
+            try app.print("\n{s}A sell exceeds the shares held; nothing was imported.{s}\n", .{ f.RED, f.RESET });
+            return error.Reported;
+        },
+        else => return err,
+    };
     try app.print("\n{s}Imported {d} transaction(s).{s}\n", .{ f.GREEN, ids.len, f.RESET });
 
     if (!opts.no_upload) try upload(app, opts.pdf_file, result, ids);
@@ -136,7 +142,6 @@ fn upload(app: *App, path: []const u8, result: parsers.Result, txn_ids: []const 
         return manualHint(app, path);
     };
     try paperless.printUploaded(app, up);
-    try ledger_cmd.sync(app);
     for (txn_ids) |tid| try paperless.insertTransactionDocuments(app, tid, &.{up.id});
     try app.print("  Linked document to {d} transaction(s)\n", .{txn_ids.len});
     try paperless.backlink(app, &.{up.id}, txn_ids);
@@ -204,8 +209,8 @@ fn printSkipped(app: *App, skipped: []const parsers.Skipped) !void {
 
 /// Unknown securities are the user's call: create them from the document's
 /// ISIN, search by name, or drop the row.
-fn resolve(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
-    try importer.check(app.db, rows.items, account_id);
+fn resolve(app: *App, rows: *std.ArrayList(Row), broker: []const u8) !void {
+    try importer.check(book(app), rows.items, broker);
     var changed = false;
     var i: usize = 0;
     while (i < rows.items.len) {
@@ -228,7 +233,11 @@ fn resolve(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
         changed = true;
         i += 1;
     }
-    if (changed) try importer.check(app.db, rows.items, account_id);
+    if (changed) try importer.check(book(app), rows.items, broker);
+}
+
+fn book(app: *App) bookings.Book {
+    return .{ .db = app.db, .a = app.a, .ledger = app.config.ledger };
 }
 
 fn preview(app: *App, rows: []const Row, account: []const u8) !void {
@@ -266,7 +275,7 @@ fn prefixLen(s: []const u8, n: usize) usize {
     return it.i;
 }
 
-fn editRows(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
+fn editRows(app: *App, rows: *std.ArrayList(Row), broker: []const u8) !void {
     while (rows.items.len > 0) {
         const choice = f.strip(try app.input(try app.fmt("\nTransaction to edit (1-{d}, Enter to finish): ", .{rows.items.len})));
         if (choice.len == 0) return;
@@ -300,6 +309,6 @@ fn editRows(app: *App, rows: *std.ArrayList(Row), account_id: i64) !void {
             .currency = after.currency,
             .exchange_rate = after.exchange_rate,
         });
-        try resolve(app, rows, account_id);
+        try resolve(app, rows, broker);
     }
 }

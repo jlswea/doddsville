@@ -5,6 +5,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+const bookings = @import("bookings.zig");
 const f = @import("format.zig");
 const ledger = @import("ledger.zig");
 const ollama = @import("ollama.zig");
@@ -122,16 +123,14 @@ pub const Row = struct {
         return if (r.held) |h| r.quantity > h else false;
     }
 
-    fn entry(r: Row, account: i64) ledger.Entry {
+    fn entry(r: Row) bookings.Entry {
         return .{
-            .account = account,
-            .kind = @tagName(r.kind),
+            .kind = std.meta.stringToEnum(bookings.Entry.Kind, @tagName(r.kind)).?,
+            .date = r.date,
             .security = if (r.hasSecurity()) r.security_id else null,
-            .quantity = r.quantity,
-            .unit = r.unit,
+            .quantity = if (r.kind == .buy or r.kind == .sell) r.quantity else 0,
             .total = r.total,
             .cost = r.cost,
-            .date = r.date,
             .currency = r.currency,
             .exchange_rate = r.exchange_rate,
         };
@@ -164,17 +163,55 @@ fn unitFromTotal(total: i64, quantity: i64) i64 {
 
 /// Finds securities by ISIN and flags duplicates and sells beyond the
 /// holdings. Rows whose security stays unknown are left for the front end.
-pub fn check(db: sqlite.Db, rs: []Row, account: i64) !void {
+pub fn check(b: bookings.Book, rs: []Row, broker: []const u8) !void {
+    const names = try b.ledger.broker(b.a, broker);
     for (rs) |*r| {
         if (r.needsSecurity()) if (r.isin) |isin| {
-            r.security_id = try ledger.securityByIsin(db, isin);
+            r.security_id = try ledger.securityByIsin(b.db, isin);
         };
         r.duplicate_of = null;
         r.held = null;
         if (r.needsSecurity()) continue;
-        r.duplicate_of = try ledger.findDuplicate(db, r.entry(account));
-        if (r.kind == .sell) r.held = try ledger.holdings(db, account, r.security_id.?, r.duplicate_of);
+        r.duplicate_of = try findDuplicate(b.db, names.cash.?, names.depot.?, r.entry());
+        if (r.kind == .sell) r.held = try held(b.db, names.depot.?, r.security_id.?, r.duplicate_of);
     }
+}
+
+/// Same kind on the broker's accounts within ten days (earlier records
+/// sometimes carry the value date), with the same shares for a trade (and
+/// Kurswert for a buy), otherwise the same gross amount.
+fn findDuplicate(db: sqlite.Db, cash: []const u8, depot: []const u8, e: bookings.Entry) !?i64 {
+    var st = try db.prepare(
+        \\SELECT t.id FROM txn t
+        \\WHERE t.description = ?1 AND ABS(julianday(t.date) - julianday(?2)) <= 10
+        \\  AND EXISTS (SELECT 1 FROM posting p JOIN ledger_account a ON a.id = p.account
+        \\                WHERE p.txn = t.id AND a.name IN (?3, ?4))
+        \\  AND CASE WHEN ?1 IN ('buy', 'sell')
+        \\    THEN EXISTS (SELECT 1 FROM posting p JOIN ledger_account a ON a.id = p.account
+        \\           WHERE p.txn = t.id AND a.name = ?4 AND p.security = ?5 AND p.quantity = ?6
+        \\             AND (?1 = 'sell' OR p.amount = ?7))
+        \\    ELSE EXISTS (SELECT 1 FROM posting p JOIN ledger_account a ON a.id = p.account
+        \\           WHERE p.txn = t.id AND a.kind NOT IN ('asset', 'liability') AND NOT p.fee AND ABS(p.amount) = ?7)
+        \\  END
+        \\ORDER BY ABS(julianday(t.date) - julianday(?2)) LIMIT 1
+    );
+    defer st.finalize();
+    const quantity = if (e.kind == .sell) -e.quantity else e.quantity;
+    try st.bindAll(.{ @tagName(e.kind), e.date, cash, depot, e.security, quantity, e.eur() });
+    return if (try st.step()) st.int(0) else null;
+}
+
+/// Shares in the depot, not counting `except` (the recorded copy of a
+/// re-imported sell).
+fn held(db: sqlite.Db, depot: []const u8, security: i64, except: ?i64) !i64 {
+    var st = try db.prepare(
+        \\SELECT COALESCE(SUM(p.quantity), 0) FROM posting p JOIN ledger_account a ON a.id = p.account
+        \\WHERE a.name = ? AND p.security = ? AND p.quantity IS NOT NULL AND p.txn IS NOT ?
+    );
+    defer st.finalize();
+    try st.bindAll(.{ depot, security, except });
+    _ = try st.step();
+    return st.int(0);
 }
 
 /// Only for rows whose document gives both an ISIN and a name.
@@ -234,17 +271,17 @@ pub fn duplicates(rs: []const Row) usize {
 }
 
 /// All non-duplicate rows in one database transaction; returns the new ids.
-pub fn commit(db: sqlite.Db, a: Allocator, rs: []const Row, account: i64) ![]const i64 {
+pub fn commit(b: bookings.Book, rs: []const Row, broker: []const u8) ![]const i64 {
     for (rs) |r| if (r.needsSecurity()) return error.UnresolvedSecurity;
     var ids: std.ArrayList(i64) = .empty;
-    try db.exec("BEGIN");
-    errdefer db.exec("ROLLBACK") catch {};
+    try b.db.exec("BEGIN");
+    errdefer b.db.exec("ROLLBACK") catch {};
     for (rs) |r| {
         if (r.duplicate_of != null) continue;
-        try ids.append(a, try ledger.insert(db, r.entry(account)));
-        if (r.security_id) |sid| if (r.security.len > 0) try ledger.fillSecurityName(db, sid, r.security);
+        try ids.append(b.a, try bookings.entry(b, broker, r.entry(), null));
+        if (r.security_id) |sid| if (r.security.len > 0) try ledger.fillSecurityName(b.db, sid, r.security);
     }
-    try db.exec("COMMIT");
+    try b.db.exec("COMMIT");
     return ids.items;
 }
 
@@ -303,12 +340,10 @@ fn byName(items: []const paperless.Named, name: []const u8) ?i64 {
 
 const testing = std.testing;
 
-fn testDb() !sqlite.Db {
-    const db = try sqlite.Db.open(":memory:");
-    try @import("migrations.zig").run(db);
-    try db.exec("INSERT INTO account (name) VALUES ('Broker')");
-    try db.exec("INSERT INTO security (isin, name) VALUES ('US0378331005', '')");
-    return db;
+fn testBook(a: Allocator) !bookings.Book {
+    const b = try bookings.testBook(a, .{});
+    try b.db.exec("INSERT INTO security (isin, name) VALUES ('US0378331005', '')");
+    return b;
 }
 
 fn sample(a: Allocator) !parsers.Result {
@@ -325,30 +360,31 @@ test "rows derive unit prices; check resolves by ISIN and leaves unknown ones" {
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const db = try testDb();
-    defer db.close();
+    const b = try testBook(a);
+    defer b.db.close();
+    const db = b.db;
     var rs = try rows(a, try sample(a));
     try testing.expectEqual(@as(i64, 9759), rs.items[0].unit);
 
-    try check(db, rs.items, 1);
+    try check(b, rs.items, "Broker");
     try testing.expectEqual(@as(?i64, 1), rs.items[0].security_id);
     try testing.expect(rs.items[1].needsSecurity());
     try testing.expect(!rs.items[2].needsSecurity());
-    try testing.expectError(error.UnresolvedSecurity, commit(db, a, rs.items, 1));
+    try testing.expectError(error.UnresolvedSecurity, commit(b, rs.items, "Broker"));
 
     try createSecurity(db, &rs.items[1]);
-    try check(db, rs.items, 1);
+    try check(b, rs.items, "Broker");
     try testing.expectEqualStrings("Example Inc.", try label(db, a, rs.items[0]));
-    const ids = try commit(db, a, rs.items, 1);
+    const ids = try commit(b, rs.items, "Broker");
     try testing.expectEqual(@as(usize, 3), ids.len);
     // The seeded security got the document's name.
     try testing.expectEqualStrings("Example Inc.", (try ledger.security(db, a, 1)).?.name);
 
     // The same document again: everything is a duplicate.
     const again = try rows(a, try sample(a));
-    try check(db, again.items, 1);
+    try check(b, again.items, "Broker");
     try testing.expectEqual(@as(usize, 3), duplicates(again.items));
-    try testing.expectEqual(@as(usize, 0), (try commit(db, a, again.items, 1)).len);
+    try testing.expectEqual(@as(usize, 0), (try commit(b, again.items, "Broker")).len);
 }
 
 test "edits keep exact totals unless quantity or price change" {
