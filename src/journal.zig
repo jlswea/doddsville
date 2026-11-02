@@ -150,7 +150,7 @@ const testing = std.testing;
 
 fn testDb() !sqlite.Db {
     const db = try sqlite.Db.open(":memory:");
-    try @import("migrations.zig").run(db, .{ .a = testing.allocator });
+    try @import("migrations.zig").run(db);
     try db.exec("PRAGMA foreign_keys = ON;");
     return db;
 }

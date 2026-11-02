@@ -264,10 +264,9 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
     const db_path = db_flag orelse app.config.db;
     app.db = try sqlite.Db.open(try app.a.dupeSentinel(u8, db_path, 0));
     defer app.db.close();
-    if (try migrations.convertsOldRows(app.db)) try backup(app, db_path);
-    migrations.run(app.db, .{ .a = app.a, .ledger = app.config.ledger }) catch |err| switch (err) {
-        error.ConversionMismatch => {
-            try app.print("{s}Turning the transactions into the journal changed a figure that must stay the same; the database was left as it was.{s}\n", .{ f.RED, f.RESET });
+    migrations.run(app.db) catch |err| switch (err) {
+        error.UnconvertedDatabase => {
+            try app.print("{s}{s} still has transactions from before the journal; convert it with an earlier dv first (up to commit \"Update the TODO list after the move to the journal\").{s}\n", .{ f.RED, db_path, f.RESET });
             return 1;
         },
         else => return err,
@@ -276,20 +275,6 @@ fn dispatch(app: *App, argv_all: []const []const u8) !u8 {
 
     try execute(app, action);
     return 0;
-}
-
-/// A copy of the file before the old rows are converted and dropped. An
-/// existing copy from an earlier attempt is kept.
-fn backup(app: *App, db_path: []const u8) !void {
-    const path = try app.fmt("{s}.before-journal.db", .{db_path});
-    var st = try app.db.prepare("VACUUM INTO ?");
-    defer st.finalize();
-    try st.bindAll(.{path});
-    _ = st.step() catch {
-        if (std.mem.indexOf(u8, app.db.errmsg(), "exists") != null) return;
-        return error.BackupFailed;
-    };
-    try app.print("Saved a copy of the database before converting it to the journal: {s}\n", .{path});
 }
 
 const Action = union(enum) {
@@ -533,6 +518,5 @@ test {
     _ = @import("paperless.zig");
     _ = @import("journal.zig");
     _ = @import("bookings.zig");
-    _ = @import("ledger_migration.zig");
     _ = @import("beancount.zig");
 }
