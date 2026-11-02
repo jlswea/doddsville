@@ -40,7 +40,7 @@ pub fn get(db: sqlite.Db, a: std.mem.Allocator, id: i64) !?SecurityInfo {
 
 fn testDb() !sqlite.Db {
     const db = try sqlite.Db.open(":memory:");
-    try @import("migrations.zig").run(db, .{ .a = std.testing.allocator });
+    try @import("migrations.zig").run(db);
     try db.exec("INSERT INTO security (isin, name) VALUES ('US0378331005', ''), ('DE0007164600', 'SAP'), ('DE0007164600', 'SAP dup')");
     return db;
 }
